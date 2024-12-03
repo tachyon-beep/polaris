@@ -1,0 +1,30 @@
+# Testing
+pytest>=7.0.0
+pytest-cov>=4.0.0
+pytest-asyncio>=0.19.0  # Ensure compatibility with asyncio changes
+
+# Code Quality
+black>=22.0.0
+isort>=5.0.0
+mypy>=1.0.0
+flake8>=6.0.0
+pylint>=2.17.0
+
+# Type Checking
+types-setuptools>=68.0.0
+typing-extensions>=4.7.0
+
+# Documentation
+sphinx>=7.0.0
+sphinx-rtd-theme>=1.2.0
+
+# Development Tools
+ipython>=8.0.0
+pip-tools>=7.0.0
+pre-commit>=3.3.0
+
+# Versioning
+setuptools-scm>=7.0.0  # Ensure it's explicitly versioned for consistency
+
+# Project requirements
+-r requirements.txt
