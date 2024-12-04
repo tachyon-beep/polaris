@@ -18,6 +18,7 @@ from src.core.graph_paths import (
     PathType,
     PathValidationError,
 )
+from src.core.graph_paths.cache import PathCache
 from src.core.models import Edge, EdgeMetadata
 
 
@@ -151,7 +152,7 @@ def test_path_result_methods(cyclic_graph):
     assert total_weight == pytest.approx(2.0, rel=1e-9)  # Default weight of 1.0 per edge
 
     # Test _create_path_result
-    result = PathFinding._create_path_result(edges, None)
+    result = PathFinding._create_path_result(edges, None, cyclic_graph)
     assert result.total_weight == pytest.approx(2.0, rel=1e-9)
     assert result.length == 2
     assert result.nodes == ["A", "D", "E"]
@@ -171,26 +172,26 @@ def test_path_validation(cyclic_graph):
     """Test path validation."""
     # Create a valid path
     valid_path = [cyclic_graph.get_edge("A", "D"), cyclic_graph.get_edge("D", "E")]
-    result = PathFinding._create_path_result(valid_path, None)
-    result.validate()  # Should not raise
+    result = PathFinding._create_path_result(valid_path, None, cyclic_graph)
+    result.validate(cyclic_graph)  # Should not raise
 
     # Create a disconnected path
     disconnected_path = [
         cyclic_graph.get_edge("A", "D"),
         cyclic_graph.get_edge("B", "C"),
     ]
-    result = PathFinding._create_path_result(disconnected_path, None)
+    result = PathFinding._create_path_result(disconnected_path, None, cyclic_graph)
     with pytest.raises(PathValidationError, match="Path discontinuity"):
-        result.validate()
+        result.validate(cyclic_graph)
 
     # Test empty path validation
     empty_result = PathResult(path=[], total_weight=0.0, length=0)
-    empty_result.validate()  # Should not raise
+    empty_result.validate(cyclic_graph)  # Should not raise
 
     # Test length mismatch
     invalid_result = PathResult(path=valid_path, total_weight=2.0, length=3)
     with pytest.raises(PathValidationError, match="Path length mismatch"):
-        invalid_result.validate()
+        invalid_result.validate(cyclic_graph)
 
 
 def test_all_paths_max_paths_limit(cyclic_graph):
@@ -402,7 +403,7 @@ def test_bidirectional_search_with_weights(cyclic_graph):
 def test_caching_behavior(cyclic_graph):
     """Test that path finding results are properly cached."""
     # Clear cache before testing
-    PathFinding._path_cache.clear()
+    PathCache.clear()
 
     # First search should miss cache
     result1 = PathFinding.bidirectional_search(cyclic_graph, "A", "E")
@@ -423,11 +424,10 @@ def test_caching_behavior(cyclic_graph):
 def test_cache_expiration(cyclic_graph):
     """Test that cached results expire correctly."""
     # Configure cache with short TTL for testing
-    original_cache = PathFinding._path_cache
+    original_cache = PathCache.cache
     try:
-        PathFinding._path_cache = PathFinding._path_cache.__class__(
-            max_size=1000, base_ttl=1, adaptive_ttl=False  # 1 second TTL
-        )
+        # Use reconfigure method instead of direct constructor
+        PathCache.reconfigure(max_size=1000, ttl=1)  # 1 second TTL
 
         # First search
         PathFinding.bidirectional_search(cyclic_graph, "A", "E")
@@ -441,13 +441,13 @@ def test_cache_expiration(cyclic_graph):
         assert metrics["misses"] >= 2
     finally:
         # Restore original cache
-        PathFinding._path_cache = original_cache
+        PathCache.cache = original_cache
 
 
 def test_cache_metrics(cyclic_graph):
     """Test cache metrics collection."""
     # Clear cache and metrics
-    PathFinding._path_cache.clear()
+    PathCache.clear()
 
     # Perform multiple searches
     for _ in range(3):

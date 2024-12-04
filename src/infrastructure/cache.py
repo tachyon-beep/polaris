@@ -1,208 +1,190 @@
 """
-Enhanced caching system for the Polaris knowledge graph framework.
+Generic LRU cache implementation with TTL support.
 
-This module provides an advanced caching implementation with:
-- LRU (Least Recently Used) eviction
-- Adaptive TTL based on access patterns
-- Performance monitoring capabilities
+This module provides a thread-safe LRU (Least Recently Used) cache implementation
+with TTL (Time To Live) support and performance metrics tracking.
+
+Features:
+- LRU eviction policy
+- TTL-based expiration
+- Adaptive TTL support
+- Thread-safe operations
+- Performance metrics
 """
 
-from typing import TypeVar, Generic, Dict, Optional, Any
-from dataclasses import dataclass
+from collections import OrderedDict
+from threading import Lock
 from time import time
-import math
-import json
+from typing import Dict, Generic, Optional, TypeVar
 
-T = TypeVar("T")
-
-
-@dataclass
-class CacheEntry(Generic[T]):
-    """
-    Cache entry containing value and metadata for tracking usage patterns.
-
-    Attributes:
-        value: The cached value
-        timestamp: Time when the entry was last accessed
-        access_count: Number of times the entry has been accessed
-    """
-
-    value: T
-    timestamp: float
-    access_count: int
-
-
-class CacheMetrics:
-    """Tracks cache performance metrics."""
-
-    def __init__(self):
-        self.hits: int = 0
-        self.misses: int = 0
-        self.evictions: int = 0
-        self.total_access_time: float = 0
-        self.access_count: int = 0
-
-    @property
-    def hit_rate(self) -> float:
-        """Calculate cache hit rate."""
-        total = self.hits + self.misses
-        return self.hits / total if total > 0 else 0
-
-    @property
-    def avg_access_time(self) -> float:
-        """Calculate average access time in milliseconds."""
-        return (self.total_access_time / self.access_count * 1000) if self.access_count > 0 else 0
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert metrics to dictionary format."""
-        return {
-            "hits": self.hits,
-            "misses": self.misses,
-            "evictions": self.evictions,
-            "hit_rate": self.hit_rate,
-            "avg_access_time_ms": self.avg_access_time,
-        }
+T = TypeVar("T")  # Type of cached values
 
 
 class LRUCache(Generic[T]):
     """
-    Enhanced LRU cache with adaptive TTL and performance monitoring.
+    Thread-safe LRU cache with TTL support.
 
-    Features:
-    - LRU eviction policy
-    - Adaptive TTL based on access patterns
+    This class implements a Least Recently Used (LRU) cache with support for:
+    - Maximum size limit with LRU eviction
+    - TTL (Time To Live) based expiration
+    - Optional adaptive TTL
+    - Thread-safe operations
     - Performance metrics tracking
-    - Configurable size and TTL parameters
+
+    The cache automatically evicts least recently used entries when it reaches
+    its size limit, and entries expire after their TTL.
+
+    Attributes:
+        max_size: Maximum number of entries to store
+        base_ttl: Base time-to-live in seconds
+        adaptive_ttl: Whether to adjust TTL based on access patterns
+        min_ttl: Minimum TTL when using adaptive TTL
+        max_ttl: Maximum TTL when using adaptive TTL
     """
 
     def __init__(
         self,
-        max_size: int = 1000,
-        base_ttl: int = 3600,
+        max_size: int,
+        base_ttl: float,
         adaptive_ttl: bool = True,
-        min_ttl: int = 300,
-        max_ttl: int = 86400,
+        min_ttl: Optional[float] = None,
+        max_ttl: Optional[float] = None,
     ):
-        """
-        Initialize the cache.
-
-        Args:
-            max_size: Maximum number of entries
-            base_ttl: Base time-to-live in seconds
-            adaptive_ttl: Whether to adjust TTL based on access patterns
-            min_ttl: Minimum TTL in seconds
-            max_ttl: Maximum TTL in seconds
-        """
-        self._cache: Dict[str, CacheEntry[T]] = {}
+        """Initialize cache with given parameters."""
+        self._cache: OrderedDict[str, T] = OrderedDict()
+        self._expiry: Dict[str, float] = {}
+        self._access_times: Dict[str, float] = {}
+        self._lock = Lock()
         self._max_size = max_size
         self._base_ttl = base_ttl
         self._adaptive_ttl = adaptive_ttl
-        self._min_ttl = min_ttl
-        self._max_ttl = max_ttl
-        self.metrics = CacheMetrics()
+        self._min_ttl = min_ttl if min_ttl is not None else base_ttl / 2
+        self._max_ttl = max_ttl if max_ttl is not None else base_ttl * 2
+
+        # Metrics
+        self._hits = 0
+        self._misses = 0
+        self._total_access_time = 0.0
+        self._access_count = 0
 
     def get(self, key: str) -> Optional[T]:
         """
-        Retrieve a value from the cache.
+        Get value from cache.
 
         Args:
-            key: Cache key
+            key: Cache key to look up
 
         Returns:
-            Cached value if present and not expired, None otherwise
+            Cached value if found and not expired, None otherwise
         """
         start_time = time()
-
         try:
-            if key not in self._cache:
-                self.metrics.misses += 1
+            with self._lock:
+                # Check if key exists and hasn't expired
+                if key in self._cache and time() < self._expiry[key]:
+                    # Update access metrics
+                    self._hits += 1
+                    self._access_times[key] = time()
+                    # Move to end (most recently used)
+                    value = self._cache.pop(key)
+                    self._cache[key] = value
+                    return value
+
+                # Cache miss
+                self._misses += 1
+                # Clean up expired key if present
+                if key in self._cache:
+                    del self._cache[key]
+                    del self._expiry[key]
+                    if key in self._access_times:
+                        del self._access_times[key]
                 return None
-
-            entry = self._cache[key]
-            current_time = time()
-
-            # Check if entry has expired
-            ttl = self._calculate_ttl(entry.access_count)
-            if current_time - entry.timestamp > ttl:
-                del self._cache[key]
-                self.metrics.evictions += 1
-                self.metrics.misses += 1
-                return None
-
-            # Update access statistics
-            entry.access_count += 1
-            entry.timestamp = current_time
-            self.metrics.hits += 1
-            return entry.value
-
         finally:
-            self.metrics.total_access_time += time() - start_time
-            self.metrics.access_count += 1
+            # Update access time metrics
+            access_duration = time() - start_time
+            self._total_access_time += access_duration
+            self._access_count += 1
 
     def put(self, key: str, value: T) -> None:
         """
-        Store a value in the cache.
+        Store value in cache.
 
         Args:
-            key: Cache key
+            key: Cache key to store value under
             value: Value to cache
         """
-        # Evict least recently used items if cache is full
-        if len(self._cache) >= self._max_size:
-            self._evict_lru()
+        with self._lock:
+            # If key exists, update it
+            if key in self._cache:
+                self._cache.pop(key)
 
-        self._cache[key] = CacheEntry(value=value, timestamp=time(), access_count=1)
+            # Add new entry
+            self._cache[key] = value
+            self._expiry[key] = time() + self._calculate_ttl(key)
+            self._access_times[key] = time()
 
-    def _calculate_ttl(self, access_count: int) -> float:
-        """
-        Calculate TTL based on access frequency if adaptive TTL is enabled.
+            # Evict least recently used if over size limit
+            while len(self._cache) > self._max_size:
+                lru_key = next(iter(self._cache))
+                del self._cache[lru_key]
+                del self._expiry[lru_key]
+                if lru_key in self._access_times:
+                    del self._access_times[lru_key]
 
-        Args:
-            access_count: Number of times entry has been accessed
-
-        Returns:
-            TTL in seconds
-        """
+    def _calculate_ttl(self, key: str) -> float:
+        """Calculate TTL for entry based on access patterns."""
         if not self._adaptive_ttl:
             return self._base_ttl
 
-        # Increase TTL for frequently accessed items
-        ttl = self._base_ttl * (1 + math.log(access_count))
-        return max(min(ttl, self._max_ttl), self._min_ttl)
+        # Calculate TTL based on access frequency
+        if key in self._access_times:
+            last_access = self._access_times[key]
+            age = time() - last_access
+            # Increase TTL for frequently accessed items
+            if age < self._base_ttl / 2:
+                return min(self._base_ttl * 2, self._max_ttl)
+            # Decrease TTL for infrequently accessed items
+            elif age > self._base_ttl * 2:
+                return max(self._base_ttl / 2, self._min_ttl)
 
-    def _evict_lru(self) -> None:
-        """Evict least recently used or expired items."""
-        current_time = time()
-
-        # First try to remove expired items
-        expired = [
-            k
-            for k, e in self._cache.items()
-            if current_time - e.timestamp > self._calculate_ttl(e.access_count)
-        ]
-
-        for key in expired:
-            del self._cache[key]
-            self.metrics.evictions += 1
-
-        # If no expired items, remove least accessed
-        if not expired and self._cache:
-            key_to_remove = min(
-                self._cache.items(), key=lambda x: (x[1].access_count, -x[1].timestamp)
-            )[0]
-            del self._cache[key_to_remove]
-            self.metrics.evictions += 1
+        return self._base_ttl
 
     def clear(self) -> None:
-        """Clear all cache entries."""
-        self._cache.clear()
-        self.metrics = CacheMetrics()
+        """Clear all entries from cache."""
+        with self._lock:
+            self._cache.clear()
+            self._expiry.clear()
+            self._access_times.clear()
+            # Reset metrics
+            self._hits = 0
+            self._misses = 0
+            self._total_access_time = 0.0
+            self._access_count = 0
 
-    def get_metrics(self) -> Dict[str, Any]:
+    def get_metrics(self) -> Dict[str, float]:
         """
-        Get current cache performance metrics.
+        Get cache performance metrics.
 
         Returns:
-            Dictionary containing cache metrics
+            Dictionary containing:
+            - hits: Number of cache hits
+            - misses: Number of cache misses
+            - size: Current cache size
+            - hit_rate: Cache hit rate
+            - avg_access_time_ms: Average access time in milliseconds
         """
-        return {"size": len(self._cache), "max_size": self._max_size, **self.metrics.to_dict()}
+        with self._lock:
+            total_accesses = self._hits + self._misses
+            hit_rate = float(self._hits) / total_accesses if total_accesses > 0 else 0.0
+            avg_access_time = (
+                float(self._total_access_time * 1000) / self._access_count
+                if self._access_count > 0
+                else 0.0
+            )
+            return {
+                "hits": float(self._hits),
+                "misses": float(self._misses),
+                "size": float(len(self._cache)),
+                "hit_rate": hit_rate,
+                "avg_access_time_ms": avg_access_time,
+            }

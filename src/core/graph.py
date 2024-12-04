@@ -2,7 +2,7 @@
 Core graph data structure with efficient adjacency list representation.
 
 This module provides the fundamental Graph class that represents the knowledge graph
-structure using an adjacency list implementation. The graph is directed and supports
+structure using an adjacency list representation. The graph is directed and supports
 efficient neighbor lookups and edge queries between nodes.
 
 The graph maintains directed relationships between nodes, where each edge
@@ -14,7 +14,7 @@ import json
 from collections import defaultdict
 from contextlib import contextmanager
 from copy import deepcopy
-from typing import Dict, Generator, Iterator, List, Optional, Set, Tuple
+from typing import Dict, Generator, Iterator, List, Optional, Set, Tuple, Union
 
 from ..infrastructure.cache import LRUCache
 from .exceptions import EdgeNotFoundError, NodeNotFoundError
@@ -33,6 +33,8 @@ class Graph:
         adjacency (Dict[str, Dict[str, Edge]]): Adjacency list representation where
             the outer dictionary maps node IDs to their neighbors, and the inner
             dictionary maps neighbor IDs to their corresponding edges.
+        reverse_index (Dict[str, Set[str]]): Reverse adjacency index mapping target
+            nodes to their source nodes for efficient reverse traversal.
         _node_set (Set[str]): Cache of all node IDs for efficient lookups
         _edge_count (int): Cache of total number of edges
         _path_cache (LRUCache): Cache for frequently accessed paths
@@ -57,21 +59,36 @@ class Graph:
             ... ])
         """
         self.adjacency: Dict[str, Dict[str, Edge]] = defaultdict(dict)
+        self.reverse_index: Dict[str, Set[str]] = defaultdict(set)
         self._node_set: Set[str] = set()
         self._edge_count: int = 0
         self._path_cache = LRUCache[List[List[str]]](
             max_size=cache_size,
-            ttl=cache_ttl,
-            serializer=lambda x: {"paths": x},
-            deserializer=lambda x: x["paths"],
+            base_ttl=cache_ttl,
+            adaptive_ttl=True,
+            min_ttl=cache_ttl // 2,
+            max_ttl=cache_ttl * 2,
         )
         self.build_adjacency_list(edges)
 
     def _get_path_cache_key(
-        self, from_node: str, to_node: str, max_depth: Optional[int] = None
+        self,
+        from_node: str,
+        to_node: str,
+        max_depth: Optional[int] = None,
+        algo: str = "default",
+        weight_func_name: Optional[str] = None,
     ) -> str:
         """Generate a cache key for path queries."""
-        return json.dumps({"from": from_node, "to": to_node, "max_depth": max_depth})
+        return json.dumps(
+            {
+                "from": from_node,
+                "to": to_node,
+                "max_depth": max_depth,
+                "algo": algo,
+                "weight_func": weight_func_name,
+            }
+        )
 
     def find_paths(
         self, from_node: str, to_node: str, max_depth: Optional[int] = None
@@ -146,14 +163,15 @@ class Graph:
         """Clear the path cache."""
         self._path_cache.clear()
 
-    def get_path_cache_stats(self) -> Dict[str, int]:
+    def get_path_cache_stats(self) -> Dict[str, Union[int, float]]:
         """
         Get statistics about the path cache.
 
         Returns:
-            Dict containing current cache size
+            Dict containing current cache metrics including size, hits, misses,
+            hit rate, and average access time
         """
-        return {"size": self._path_cache.get_size()}
+        return self._path_cache.get_metrics()
 
     @contextmanager
     def transaction(self) -> Generator[None, None, None]:
@@ -179,6 +197,7 @@ class Graph:
         # Create backup of current state
         backup = {
             "adjacency": deepcopy(self.adjacency),
+            "reverse_index": deepcopy(self.reverse_index),
             "node_set": self._node_set.copy(),
             "edge_count": self._edge_count,
         }
@@ -187,6 +206,7 @@ class Graph:
         except Exception as e:
             # Restore state from backup on error
             self.adjacency = backup["adjacency"]
+            self.reverse_index = backup["reverse_index"]
             self._node_set = backup["node_set"]
             self._edge_count = backup["edge_count"]
             raise e
@@ -215,10 +235,11 @@ class Graph:
         if edge.to_entity not in self.adjacency:
             self.adjacency[edge.to_entity] = {}
 
-        # Add the edge to the adjacency list
+        # Add the edge to the adjacency list and reverse index
         if edge.to_entity not in self.adjacency[edge.from_entity]:
             self._edge_count += 1
         self.adjacency[edge.from_entity][edge.to_entity] = edge
+        self.reverse_index[edge.to_entity].add(edge.from_entity)
 
         # Clear path cache as graph structure has changed
         self.clear_path_cache()
@@ -268,11 +289,14 @@ class Graph:
             raise EdgeNotFoundError(f"No edge exists from '{from_node}' to '{to_node}'")
 
         del self.adjacency[from_node][to_node]
+        self.reverse_index[to_node].remove(from_node)
         self._edge_count -= 1
 
         # Clean up empty adjacency entries
         if not self.adjacency[from_node]:
             del self.adjacency[from_node]
+        if not self.reverse_index[to_node]:
+            del self.reverse_index[to_node]
 
         # Clear path cache as graph structure has changed
         self.clear_path_cache()
@@ -322,19 +346,21 @@ class Graph:
         self.clear_path_cache()
         self.add_edges_batch(edges)
 
-    def get_neighbors(self, node: str) -> Set[str]:
+    def get_neighbors(self, node: str, reverse: bool = False) -> Set[str]:
         """
         Get all neighbors of a node.
 
-        Returns a set of node IDs that the specified node has edges to.
-        If the node has no outgoing edges or doesn't exist in the graph,
-        returns an empty set.
+        Returns a set of node IDs that the specified node has edges to (or from,
+        if reverse=True). If the node has no outgoing/incoming edges or doesn't
+        exist in the graph, returns an empty set.
 
         Args:
             node (str): ID of the node to get neighbors for.
+            reverse (bool): If True, return nodes that have edges to this node.
+                          If False, return nodes that this node has edges to.
 
         Returns:
-            Set[str]: Set of node IDs that the specified node has edges to.
+            Set[str]: Set of node IDs that are neighbors of the specified node.
                      Returns an empty set if the node has no neighbors or
                      doesn't exist in the graph.
 
@@ -343,11 +369,13 @@ class Graph:
             ...     Edge(from_entity="A", to_entity="B", relation_type=RelationType.CONNECTS_TO),
             ...     Edge(from_entity="A", to_entity="C", relation_type=RelationType.DEPENDS_ON)
             ... ])
-            >>> graph.get_neighbors("A")
+            >>> graph.get_neighbors("A")  # Forward neighbors
             {"B", "C"}
-            >>> graph.get_neighbors("D")  # Non-existent node
-            set()
+            >>> graph.get_neighbors("B", reverse=True)  # Reverse neighbors
+            {"A"}
         """
+        if reverse:
+            return self.reverse_index.get(node, set()).copy()
         return set(self.adjacency.get(node, {}).keys())
 
     def get_edge(self, from_node: str, to_node: str) -> Optional[Edge]:
@@ -412,18 +440,20 @@ class Graph:
             raise EdgeNotFoundError(f"No edge exists from '{from_node}' to '{to_node}'")
         return edge
 
-    def get_degree(self, node: str) -> int:
+    def get_degree(self, node: str, reverse: bool = False) -> int:
         """
-        Get the out-degree (number of outgoing edges) of a node.
+        Get the degree (number of edges) of a node.
 
-        Calculates the number of edges originating from the specified node.
-        Returns 0 if the node doesn't exist in the graph.
+        Calculates the number of edges connected to the specified node.
+        For directed graphs, this can be either outgoing edges (default)
+        or incoming edges (if reverse=True).
 
         Args:
             node (str): ID of the node to get the degree for.
+            reverse (bool): If True, count incoming edges instead of outgoing.
 
         Returns:
-            int: The number of outgoing edges from the node.
+            int: The number of edges connected to the node.
                 Returns 0 if the node doesn't exist.
 
         Example:
@@ -431,11 +461,13 @@ class Graph:
             ...     Edge(from_entity="A", to_entity="B", relation_type=RelationType.CONNECTS_TO),
             ...     Edge(from_entity="A", to_entity="C", relation_type=RelationType.DEPENDS_ON)
             ... ])
-            >>> graph.get_degree("A")
+            >>> graph.get_degree("A")  # Out-degree
             2
-            >>> graph.get_degree("D")  # Non-existent node
-            0
+            >>> graph.get_degree("B", reverse=True)  # In-degree
+            1
         """
+        if reverse:
+            return len(self.reverse_index.get(node, set()))
         return len(self.adjacency.get(node, {}))
 
     def get_nodes(self) -> Set[str]:
