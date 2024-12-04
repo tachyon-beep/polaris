@@ -19,9 +19,10 @@ from typing import Dict, Generator, Iterator, List, Optional, Set, Tuple, Union
 from ..infrastructure.cache import LRUCache
 from .exceptions import EdgeNotFoundError, NodeNotFoundError
 from .models import Edge
+from .types import GraphProtocol
 
 
-class Graph:
+class Graph(GraphProtocol):
     """
     Core graph data structure with efficient adjacency list representation.
 
@@ -403,6 +404,59 @@ class Graph:
         """
         return self.adjacency.get(from_node, {}).get(to_node)
 
+    def get_incoming_edges(self, node: str) -> Set[Edge]:
+        """
+        Get all incoming edges for a node.
+
+        Returns a set of Edge objects representing all edges that have this node
+        as their target.
+
+        Args:
+            node (str): ID of the node to get incoming edges for.
+
+        Returns:
+            Set[Edge]: Set of Edge objects representing incoming edges.
+                      Returns an empty set if the node has no incoming edges
+                      or doesn't exist in the graph.
+
+        Example:
+            >>> graph = Graph([
+            ...     Edge(from_entity="A", to_entity="B", relation_type=RelationType.CONNECTS_TO),
+            ...     Edge(from_entity="C", to_entity="B", relation_type=RelationType.DEPENDS_ON)
+            ... ])
+            >>> incoming = graph.get_incoming_edges("B")
+            >>> len(incoming)  # B has two incoming edges
+            2
+        """
+        incoming_edges = set()
+        for source_node in self.reverse_index.get(node, set()):
+            edge = self.get_edge(source_node, node)
+            if edge is not None:
+                incoming_edges.add(edge)
+        return incoming_edges
+
+    def has_edge(self, from_node: str, to_node: str) -> bool:
+        """
+        Check if an edge exists between two nodes.
+
+        Args:
+            from_node (str): ID of the source node.
+            to_node (str): ID of the target node.
+
+        Returns:
+            bool: True if an edge exists from source to target, False otherwise.
+
+        Example:
+            >>> graph = Graph([
+            ...     Edge(from_entity="A", to_entity="B", relation_type=RelationType.CONNECTS_TO)
+            ... ])
+            >>> graph.has_edge("A", "B")
+            True
+            >>> graph.has_edge("B", "A")
+            False
+        """
+        return self.get_edge(from_node, to_node) is not None
+
     def get_edge_safe(self, from_node: str, to_node: str) -> Edge:
         """
         Get the edge between two nodes, raising an error if it doesn't exist.
@@ -459,7 +513,7 @@ class Graph:
         Example:
             >>> graph = Graph([
             ...     Edge(from_entity="A", to_entity="B", relation_type=RelationType.CONNECTS_TO),
-            ...     Edge(from_entity="A", to_entity="C", relation_type=RelationType.DEPENDS_ON)
+            ...     Edge(from_entity="C", to_entity="B", relation_type=RelationType.DEPENDS_ON)
             ... ])
             >>> graph.get_degree("A")  # Out-degree
             2
@@ -545,28 +599,6 @@ class Graph:
             False
         """
         return node in self._node_set
-
-    def has_edge(self, from_node: str, to_node: str) -> bool:
-        """
-        Check if an edge exists between two nodes.
-
-        Args:
-            from_node (str): ID of the source node.
-            to_node (str): ID of the target node.
-
-        Returns:
-            bool: True if an edge exists from source to target, False otherwise.
-
-        Example:
-            >>> graph = Graph([
-            ...     Edge(from_entity="A", to_entity="B", relation_type=RelationType.CONNECTS_TO)
-            ... ])
-            >>> graph.has_edge("A", "B")
-            True
-            >>> graph.has_edge("B", "A")
-            False
-        """
-        return self.get_edge(from_node, to_node) is not None
 
     @classmethod
     def from_edges(cls, edges: List[Edge]) -> "Graph":

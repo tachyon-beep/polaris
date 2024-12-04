@@ -41,6 +41,14 @@ def cyclic_graph(sample_edge_metadata) -> Graph:
     |         |
     v         v
     D ------> E
+
+    Edge impact scores:
+    A->B: 0.8
+    B->C: 0.7
+    C->A: 0.6
+    A->D: 0.5
+    C->E: 0.4
+    D->E: 0.3
     """
     edges = [
         Edge(
@@ -97,16 +105,80 @@ def test_shortest_path_basic(cyclic_graph):
     assert path[1].from_entity == "D" and path[1].to_entity == "E"
 
 
-def test_shortest_path_with_weights(cyclic_graph):
-    """Test shortest path with custom weight function."""
+def test_shortest_path_with_inverse_weights(cyclic_graph):
+    """Test shortest path with inverse impact score weights.
+
+    This test verifies that Dijkstra's algorithm finds the path with lowest
+    total weight when weights are inverse of impact scores.
+
+    Expected path: A->B->C->E because:
+    - A->B weight = 1/0.8 = 1.25
+    - B->C weight = 1/0.7 = 1.43
+    - C->E weight = 1/0.4 = 2.50
+    Total = 5.18
+
+    Compared to A->D->E:
+    - A->D weight = 1/0.5 = 2.00
+    - D->E weight = 1/0.3 = 3.33
+    Total = 5.33
+    """
 
     def weight_func(edge: Edge) -> float:
-        return 1.0 / edge.impact_score  # Higher impact means lower weight
+        return 1.0 / edge.impact_score
+
+    print("\nTesting shortest path with inverse weights:")
+    print("A->D->E total weight:", 1.0 / 0.5 + 1.0 / 0.3)
+    print("A->B->C->E total weight:", 1.0 / 0.8 + 1.0 / 0.7 + 1.0 / 0.4)
 
     path = PathFinding.shortest_path(cyclic_graph, "A", "E", weight_func=weight_func)
-    # Should prefer path with higher impact scores
-    assert len(path) == 3  # A -> B -> C -> E
+    print("\nChosen path:")
+    for edge in path:
+        print(f"  {edge.from_entity}->{edge.to_entity} (weight={1.0/edge.impact_score:.2f})")
+    print(f"Total weight: {path.total_weight}")
+
+    # Should choose path with lowest total weight
     assert [edge.to_entity for edge in path] == ["B", "C", "E"]
+    assert path.total_weight == pytest.approx(5.18, rel=1e-2)
+
+
+def test_shortest_path_with_impact_weights(cyclic_graph):
+    """Test shortest path using impact scores directly as weights.
+
+    This test verifies that we can find the path with highest total impact
+    by using negated impact scores as weights. This works because:
+    1. Dijkstra's finds path with minimum total weight
+    2. By negating impact scores, minimum total weight = maximum total impact
+
+    Expected path: A->B->C->E because:
+    - A->B impact = 0.8
+    - B->C impact = 0.7
+    - C->E impact = 0.4
+    Total impact = 1.9
+
+    Compared to A->D->E:
+    - A->D impact = 0.5
+    - D->E impact = 0.3
+    Total impact = 0.8
+    """
+
+    def weight_func(edge: Edge) -> float:
+        return -edge.impact_score  # Negate so Dijkstra's minimum becomes our maximum
+
+    print("\nTesting shortest path with impact weights:")
+    print("A->D->E total impact:", 0.5 + 0.3)
+    print("A->B->C->E total impact:", 0.8 + 0.7 + 0.4)
+
+    path = PathFinding.shortest_path(cyclic_graph, "A", "E", weight_func=weight_func)
+    print("\nChosen path:")
+    total_impact = 0.0
+    for edge in path:
+        print(f"  {edge.from_entity}->{edge.to_entity} (impact={edge.impact_score})")
+        total_impact += edge.impact_score
+    print(f"Total impact: {total_impact}")
+
+    # Should choose path with highest impact scores
+    assert [edge.to_entity for edge in path] == ["B", "C", "E"]
+    assert total_impact == pytest.approx(1.9, rel=1e-2)  # Sum of actual impact scores
 
 
 def test_shortest_path_no_path(cyclic_graph, sample_edge_metadata):
@@ -361,7 +433,9 @@ def test_find_paths_different_types(cyclic_graph):
 
 def test_bidirectional_search_basic(cyclic_graph):
     """Test basic bidirectional search functionality."""
+    print("\nTesting bidirectional search from A to E")
     result = PathFinding.bidirectional_search(cyclic_graph, "A", "E")
+    print(f"\nResult path: {[f'{e.from_entity}->{e.to_entity}' for e in result]}")
     assert isinstance(result, PathResult)
     assert result.nodes[0] == "A"
     assert result.nodes[-1] == "E"
@@ -371,25 +445,54 @@ def test_bidirectional_search_basic(cyclic_graph):
 def test_bidirectional_search_with_depth_limit(cyclic_graph):
     """Test bidirectional search respects depth limit."""
     # Test with depth limit that should allow finding path
+    print("\nTesting bidirectional search with max_depth=2")
     result = PathFinding.bidirectional_search(cyclic_graph, "A", "E", max_depth=2)
+    print(f"\nResult path: {[f'{e.from_entity}->{e.to_entity}' for e in result]}")
     assert isinstance(result, PathResult)
     assert len(result) <= 2
 
     # Test with depth limit that should prevent finding path
+    print("\nTesting bidirectional search with max_depth=1")
     with pytest.raises(GraphOperationError):
         PathFinding.bidirectional_search(cyclic_graph, "A", "E", max_depth=1)
 
 
 def test_bidirectional_search_with_weights(cyclic_graph):
-    """Test bidirectional search with custom weight function."""
+    """Test bidirectional search with impact score weights.
+
+    This test verifies that bidirectional search finds the path with highest
+    total impact score by using negated scores as weights.
+
+    Expected path: A->B->C->E because:
+    - A->B impact = 0.8
+    - B->C impact = 0.7
+    - C->E impact = 0.4
+    Total = 1.9
+
+    Compared to A->D->E:
+    - A->D impact = 0.5
+    - D->E impact = 0.3
+    Total = 0.8
+    """
 
     def weight_func(edge: Edge) -> float:
-        return 1.0 / edge.impact_score  # Higher impact means lower weight
+        return -edge.impact_score  # Negate so minimum path = maximum impact
+
+    print("\nTesting bidirectional search with impact weights:")
+    print("A->D->E total impact:", 0.5 + 0.3)
+    print("A->B->C->E total impact:", 0.8 + 0.7 + 0.4)
 
     result = PathFinding.bidirectional_search(cyclic_graph, "A", "E", weight_func=weight_func)
-    assert isinstance(result, PathResult)
-    # Should prefer path with higher impact scores
+    print("\nResult path:")
+    total_impact = 0.0
+    for edge in result:
+        print(f"  {edge.from_entity}->{edge.to_entity} (impact={edge.impact_score})")
+        total_impact += edge.impact_score
+    print(f"Total impact: {total_impact}")
+
+    # Should choose path with highest impact scores
     assert result.nodes == ["A", "B", "C", "E"]
+    assert total_impact == pytest.approx(1.9, rel=1e-2)
 
 
 def test_caching_behavior(cyclic_graph):

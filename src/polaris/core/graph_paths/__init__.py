@@ -9,7 +9,7 @@ graph paths, including:
 - Path validation and caching
 """
 
-from typing import Callable, Iterator, List, Optional, Union
+from typing import Callable, Iterator, List, Optional, Union, cast
 
 from ..graph import Graph
 from ..models import Edge
@@ -160,7 +160,7 @@ class PathFinding:
         max_paths: Optional[int] = None,
         filter_func: Optional[Callable[[List[Edge]], bool]] = None,
         weight_func: Optional[WeightFunc] = None,
-    ) -> Union[PathResult, Iterator[PathResult]]:
+    ) -> PathResult | Iterator[PathResult]:
         """
         Find paths between nodes using specified algorithm.
 
