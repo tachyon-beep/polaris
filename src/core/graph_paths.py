@@ -3,10 +3,12 @@ Path finding algorithms for the knowledge graph.
 
 This module provides implementations of various path finding algorithms for traversing
 and analyzing paths between nodes in the knowledge graph. It includes:
+- Bidirectional search for efficient path finding
 - Dijkstra's algorithm for finding shortest paths
 - Depth-first search for finding all possible paths
 - Support for custom weight functions and path filtering
 - Path validation and optimization
+- Performance monitoring and caching
 
 The path finding capabilities are essential for:
 - Analyzing relationships between nodes
@@ -15,12 +17,14 @@ The path finding capabilities are essential for:
 - Discovering indirect relationships
 """
 
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from enum import Enum
 from heapq import heappop, heappush
-from typing import Callable, Dict, Iterator, List, Optional, Set, Tuple, TypeVar, Union
+from time import time
+from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple, TypeVar, Union
 
+from ..infrastructure.cache import LRUCache
 from .exceptions import GraphOperationError, NodeNotFoundError
 from .graph import Graph
 from .models import Edge
@@ -39,6 +43,35 @@ T = TypeVar("T")
 DEFAULT_MAX_PATH_LENGTH = 50  # Default limit to prevent unbounded recursion
 DEFAULT_MAX_PATHS = 1000  # Default limit for number of paths to return
 
+# Cache configuration
+PATH_CACHE_SIZE = 10000
+PATH_CACHE_TTL = 3600  # 1 hour
+
+
+@dataclass
+class PerformanceMetrics:
+    """Container for path finding performance metrics."""
+
+    operation: str
+    start_time: float
+    end_time: float = 0.0
+    path_length: Optional[int] = None
+    cache_hit: bool = False
+
+    @property
+    def duration(self) -> float:
+        """Calculate operation duration in milliseconds."""
+        return (self.end_time - self.start_time) * 1000
+
+    def to_dict(self) -> Dict[str, Union[str, float, int, bool, None]]:
+        """Convert metrics to dictionary format."""
+        return {
+            "operation": self.operation,
+            "duration_ms": self.duration,
+            "path_length": self.path_length,
+            "cache_hit": self.cache_hit,
+        }
+
 
 class PathValidationError(Exception):
     """Raised when a path fails validation checks."""
@@ -50,6 +83,7 @@ class PathType(Enum):
     """Types of paths that can be found in the graph."""
 
     SHORTEST = "shortest"  # Shortest path by edge count or weight
+    BIDIRECTIONAL = "bidirectional"  # Bidirectional search for efficient path finding
     ALL = "all"  # All possible paths
     FILTERED = "filtered"  # Paths meeting specific criteria
 
@@ -112,6 +146,16 @@ class PathResult:
             )
 
 
+@dataclass
+class SearchState:
+    """State information for bidirectional search."""
+
+    queue: deque
+    visited: Set[str]
+    parent: Dict[str, Optional[str]]
+    edges: Dict[Tuple[str, str], Edge]
+
+
 class PathFinding:
     """
     Path finding algorithms for knowledge graph traversal.
@@ -120,6 +164,24 @@ class PathFinding:
     for discovering and analyzing paths between nodes in the knowledge graph.
     The algorithms support customization through weight functions and filters.
     """
+
+    # Initialize cache for path results
+    _path_cache = LRUCache[PathResult](
+        max_size=PATH_CACHE_SIZE, base_ttl=PATH_CACHE_TTL, adaptive_ttl=True
+    )
+
+    @staticmethod
+    def _get_cache_key(
+        start_node: NodeID,
+        end_node: NodeID,
+        path_type: PathType,
+        weight_func: Optional[WeightFunc] = None,
+    ) -> str:
+        """Generate cache key for path finding results."""
+        key_parts = [start_node, end_node, path_type.value]
+        if weight_func is not None:
+            key_parts.append(weight_func.__name__)
+        return ":".join(key_parts)
 
     @staticmethod
     def _validate_nodes(graph: Graph, start_node: NodeID, end_node: NodeID) -> None:
@@ -158,7 +220,7 @@ class PathFinding:
         if weight <= 0:
             raise ValueError(
                 f"Edge weight must be positive. Got {weight} for "
-                "edge {edge.from_entity}->{edge.to_entity}"
+                f"edge {edge.from_entity}->{edge.to_entity}"
             )
         return weight
 
@@ -192,6 +254,174 @@ class PathFinding:
         return PathResult(path=path, total_weight=total_weight, length=len(path))
 
     @staticmethod
+    def _expand_search(
+        graph: Graph,
+        current: SearchState,
+        opposite: SearchState,
+        weight_func: Optional[WeightFunc] = None,
+    ) -> Optional[str]:
+        """
+        Expands search in one direction and checks for intersection.
+
+        Args:
+            graph: The graph instance
+            current: Current search direction state
+            opposite: Opposite search direction state
+            weight_func: Optional weight function
+
+        Returns:
+            Intersection node ID if found, None otherwise
+        """
+        if not current.queue:
+            return None
+
+        node, depth = current.queue.popleft()
+
+        for neighbor in graph.get_neighbors(node):
+            if neighbor in opposite.visited:
+                edge = graph.get_edge(node, neighbor)
+                if edge:
+                    current.edges[(node, neighbor)] = edge
+                return neighbor
+
+            if neighbor not in current.visited:
+                edge = graph.get_edge(node, neighbor)
+                if edge:
+                    current.queue.append((neighbor, depth + 1))
+                    current.visited.add(neighbor)
+                    current.parent[neighbor] = node
+                    current.edges[(node, neighbor)] = edge
+
+        return None
+
+    @staticmethod
+    def _construct_bidirectional_path(
+        intersection: str, forward: SearchState, backward: SearchState
+    ) -> List[Edge]:
+        """
+        Constructs complete path from intersection point in bidirectional search.
+
+        Args:
+            intersection: Node where forward and backward searches met
+            forward: Forward search state
+            backward: Backward search state
+
+        Returns:
+            Complete path as list of edges
+        """
+        path = []
+
+        # Build forward path
+        current = intersection
+        while current in forward.parent:
+            prev = forward.parent[current]
+            if prev is not None and (prev, current) in forward.edges:
+                path.append(forward.edges[(prev, current)])
+            current = prev
+        path.reverse()
+
+        # Build backward path
+        current = intersection
+        while current in backward.parent:
+            next_node = backward.parent[current]
+            if next_node is not None and (current, next_node) in backward.edges:
+                path.append(backward.edges[(current, next_node)])
+            current = next_node
+
+        return path
+
+    @staticmethod
+    def bidirectional_search(
+        graph: Graph,
+        start_node: NodeID,
+        end_node: NodeID,
+        max_depth: Optional[int] = None,
+        weight_func: Optional[WeightFunc] = None,
+    ) -> PathResult:
+        """
+        Find path between nodes using bidirectional search.
+
+        Implements bidirectional search starting from both ends simultaneously,
+        which can be significantly faster than unidirectional search for large graphs.
+
+        Args:
+            graph: The graph instance
+            start_node: Starting node ID
+            end_node: Target node ID
+            max_depth: Maximum search depth (optional)
+            weight_func: Optional function for edge weights
+
+        Returns:
+            PathResult containing the found path
+
+        Raises:
+            NodeNotFoundError: If start_node or end_node doesn't exist
+            GraphOperationError: If no path exists between the nodes
+        """
+        metrics = PerformanceMetrics(operation="bidirectional_search", start_time=time())
+
+        try:
+            # Check cache first
+            cache_key = PathFinding._get_cache_key(
+                start_node, end_node, PathType.BIDIRECTIONAL, weight_func
+            )
+            cached_result = PathFinding._path_cache.get(cache_key)
+            if cached_result is not None:
+                metrics.cache_hit = True
+                return cached_result
+
+            PathFinding._validate_nodes(graph, start_node, end_node)
+
+            # Initialize forward and backward search states
+            forward = SearchState(
+                queue=deque([(start_node, 0)]),
+                visited={start_node},
+                parent={start_node: None},
+                edges={},
+            )
+
+            backward = SearchState(
+                queue=deque([(end_node, 0)]), visited={end_node}, parent={end_node: None}, edges={}
+            )
+
+            while forward.queue and backward.queue:
+                # Check depth limit
+                if max_depth is not None:
+                    _, f_depth = forward.queue[0]
+                    _, b_depth = backward.queue[0]
+                    if f_depth + b_depth > max_depth:
+                        break
+
+                # Expand forward search
+                intersection = PathFinding._expand_search(graph, forward, backward, weight_func)
+                if intersection:
+                    path = PathFinding._construct_bidirectional_path(
+                        intersection, forward, backward
+                    )
+                    result = PathFinding._create_path_result(path, weight_func)
+                    result.validate()
+                    PathFinding._path_cache.put(cache_key, result)
+                    metrics.path_length = len(path)
+                    return result
+
+                # Expand backward search
+                intersection = PathFinding._expand_search(graph, backward, forward, weight_func)
+                if intersection:
+                    path = PathFinding._construct_bidirectional_path(
+                        intersection, forward, backward
+                    )
+                    result = PathFinding._create_path_result(path, weight_func)
+                    result.validate()
+                    PathFinding._path_cache.put(cache_key, result)
+                    metrics.path_length = len(path)
+                    return result
+
+            raise GraphOperationError(f"No path exists between {start_node} and {end_node}")
+
+        finally:
+            metrics.end_time = time()
+
+    @staticmethod
     def shortest_path(
         graph: Graph,
         start_node: NodeID,
@@ -218,71 +448,83 @@ class PathFinding:
             NodeNotFoundError: If start_node or end_node doesn't exist
             GraphOperationError: If no path exists between the nodes
             ValueError: If weight_func returns zero or negative values
-
-        Example:
-            >>> def weight_by_type(edge: Edge) -> float:
-            ...     return 2.0 if edge.relation_type == RelationType.DEPENDS_ON else 1.0
-            >>> result = PathFinding.shortest_path(
-            ...     graph, "A", "C", weight_func=weight_by_type
-            ... )
-            >>> print(f"Path length: {result.length}")
         """
-        PathFinding._validate_nodes(graph, start_node, end_node)
+        metrics = PerformanceMetrics(operation="shortest_path", start_time=time())
 
-        # Initialize data structures
-        distances: Dict[NodeID, float] = defaultdict(lambda: float("infinity"))
-        distances[start_node] = 0
-        previous: Dict[NodeID, Optional[NodeID]] = defaultdict(lambda: None)
-        visited: Set[NodeID] = set()
-        pq: List[Tuple[float, NodeID]] = [(0, start_node)]
+        try:
+            # Check cache first
+            cache_key = PathFinding._get_cache_key(
+                start_node, end_node, PathType.SHORTEST, weight_func
+            )
+            cached_result = PathFinding._path_cache.get(cache_key)
+            if cached_result is not None:
+                metrics.cache_hit = True
+                return cached_result
 
-        while pq:
-            current_distance, current_node = heappop(pq)
+            PathFinding._validate_nodes(graph, start_node, end_node)
 
-            if current_node == end_node:
-                break
+            # Initialize data structures
+            distances: Dict[NodeID, float] = defaultdict(lambda: float("infinity"))
+            distances[start_node] = 0
+            previous: Dict[NodeID, Optional[NodeID]] = defaultdict(lambda: None)
+            visited: Set[NodeID] = set()
+            pq: List[Tuple[float, NodeID]] = [(0, start_node)]
 
-            if current_node in visited:
-                continue
+            while pq:
+                current_distance, current_node = heappop(pq)
 
-            visited.add(current_node)
+                if current_node == end_node:
+                    break
 
-            for neighbor in graph.get_neighbors(current_node):
-                if neighbor in visited:
+                if current_node in visited:
                     continue
 
-                edge = graph.get_edge(current_node, neighbor)
+                visited.add(current_node)
+
+                for neighbor in graph.get_neighbors(current_node):
+                    if neighbor in visited:
+                        continue
+
+                    edge = graph.get_edge(current_node, neighbor)
+                    if edge is None:
+                        continue
+
+                    edge_weight = PathFinding._get_edge_weight(edge, weight_func)
+                    new_distance = current_distance + edge_weight
+
+                    if new_distance < distances[neighbor]:
+                        distances[neighbor] = new_distance
+                        previous[neighbor] = current_node
+                        heappush(pq, (new_distance, neighbor))
+
+            if distances[end_node] == float("infinity"):
+                raise GraphOperationError(f"No path exists between {start_node} and {end_node}")
+
+            # Reconstruct path
+            path: List[Edge] = []
+            current = end_node
+            while current != start_node:
+                prev = previous[current]
+                if prev is None:
+                    break
+                edge = graph.get_edge(prev, current)
                 if edge is None:
-                    continue
+                    raise GraphOperationError("Path reconstruction failed")
+                path.append(edge)
+                current = prev
 
-                edge_weight = PathFinding._get_edge_weight(edge, weight_func)
-                new_distance = current_distance + edge_weight
+            path.reverse()
+            result = PathFinding._create_path_result(path, weight_func)
+            result.validate()
 
-                if new_distance < distances[neighbor]:
-                    distances[neighbor] = new_distance
-                    previous[neighbor] = current_node
-                    heappush(pq, (new_distance, neighbor))
+            # Cache the result
+            PathFinding._path_cache.put(cache_key, result)
 
-        if distances[end_node] == float("infinity"):
-            raise GraphOperationError(f"No path exists between {start_node} and {end_node}")
+            metrics.path_length = len(path)
+            return result
 
-        # Reconstruct path
-        path: List[Edge] = []
-        current = end_node
-        while current != start_node:
-            prev = previous[current]
-            if prev is None:
-                break
-            edge = graph.get_edge(prev, current)
-            if edge is None:
-                raise GraphOperationError("Path reconstruction failed")
-            path.append(edge)
-            current = prev
-
-        path.reverse()
-        result = PathFinding._create_path_result(path, weight_func)
-        result.validate()
-        return result
+        finally:
+            metrics.end_time = time()
 
     @staticmethod
     def all_paths(
@@ -316,50 +558,57 @@ class PathFinding:
             NodeNotFoundError: If start_node or end_node doesn't exist
             ValueError: If max_length or max_paths is not positive
         """
-        PathFinding._validate_nodes(graph, start_node, end_node)
+        metrics = PerformanceMetrics(operation="all_paths", start_time=time())
 
-        # Use default limits if none provided
-        if max_length is None:
-            max_length = DEFAULT_MAX_PATH_LENGTH
-        if max_paths is None:
-            max_paths = DEFAULT_MAX_PATHS
+        try:
+            PathFinding._validate_nodes(graph, start_node, end_node)
 
-        if max_length <= 0:
-            raise ValueError(f"max_length must be positive, got {max_length}")
-        if max_paths <= 0:
-            raise ValueError(f"max_paths must be positive, got {max_paths}")
+            # Use default limits if none provided
+            if max_length is None:
+                max_length = DEFAULT_MAX_PATH_LENGTH
+            if max_paths is None:
+                max_paths = DEFAULT_MAX_PATHS
 
-        paths_found = 0
-        stack = [(start_node, [], {start_node})]  # (node, path_edges, visited)
+            if max_length <= 0:
+                raise ValueError(f"max_length must be positive, got {max_length}")
+            if max_paths <= 0:
+                raise ValueError(f"max_paths must be positive, got {max_paths}")
 
-        while stack and paths_found < max_paths:
-            current, path_edges, visited = stack.pop()
+            paths_found = 0
+            stack = [(start_node, [], {start_node})]  # (node, path_edges, visited)
 
-            # Check if current node is the end node
-            if current == end_node:
-                if filter_func is None or filter_func(path_edges):
-                    result = PathFinding._create_path_result(path_edges, weight_func)
-                    result.validate()
-                    yield result
-                    paths_found += 1
-                continue
+            while stack and paths_found < max_paths:
+                current, path_edges, visited = stack.pop()
 
-            # Skip if path is too long
-            if len(path_edges) >= max_length:
-                continue
+                # Check if current node is the end node
+                if current == end_node:
+                    if filter_func is None or filter_func(path_edges):
+                        result = PathFinding._create_path_result(path_edges, weight_func)
+                        result.validate()
+                        metrics.path_length = len(path_edges)
+                        yield result
+                        paths_found += 1
+                    continue
 
-            # Process neighbors in reverse sorted order for consistent DFS
-            neighbors = sorted(graph.get_neighbors(current), reverse=True)
-            for neighbor in neighbors:
-                if neighbor not in visited:
-                    edge = graph.get_edge(current, neighbor)
-                    if edge is None:
-                        continue
+                # Skip if path is too long
+                if len(path_edges) >= max_length:
+                    continue
 
-                    # Add edge to path and neighbor to visited set
-                    new_path_edges = path_edges + [edge]
-                    new_visited = visited | {neighbor}
-                    stack.append((neighbor, new_path_edges, new_visited))
+                # Process neighbors in reverse sorted order for consistent DFS
+                neighbors = sorted(graph.get_neighbors(current), reverse=True)
+                for neighbor in neighbors:
+                    if neighbor not in visited:
+                        edge = graph.get_edge(current, neighbor)
+                        if edge is None:
+                            continue
+
+                        # Add edge to path and neighbor to visited set
+                        new_path_edges = path_edges + [edge]
+                        new_visited = visited | {neighbor}
+                        stack.append((neighbor, new_path_edges, new_visited))
+
+        finally:
+            metrics.end_time = time()
 
     @staticmethod
     def find_paths(
@@ -371,7 +620,7 @@ class PathFinding:
         max_paths: Optional[int] = None,
         filter_func: Optional[PathFilter] = None,
         weight_func: Optional[WeightFunc] = None,
-    ) -> Union[PathResult, Iterator[PathResult]]:
+    ) -> PathResult | Iterator[PathResult]:
         """
         Generic path finding method supporting multiple strategies.
 
@@ -394,12 +643,16 @@ class PathFinding:
         Example:
             >>> result = PathFinding.find_paths(
             ...     graph, "A", "C",
-            ...     path_type=PathType.SHORTEST,
+            ...     path_type=PathType.BIDIRECTIONAL,
             ...     weight_func=lambda e: e.metadata.weight
             ... )
         """
         if path_type == PathType.SHORTEST:
             return PathFinding.shortest_path(graph, start_node, end_node, weight_func)
+        elif path_type == PathType.BIDIRECTIONAL:
+            return PathFinding.bidirectional_search(
+                graph, start_node, end_node, max_length, weight_func
+            )
         else:
             return PathFinding.all_paths(
                 graph,
@@ -410,3 +663,8 @@ class PathFinding:
                 filter_func,
                 weight_func,
             )
+
+    @staticmethod
+    def get_cache_metrics() -> Dict[str, Any]:
+        """Get current cache performance metrics."""
+        return PathFinding._path_cache.get_metrics()

@@ -1,266 +1,208 @@
 """
-LRU cache implementation for knowledge graph entities and relations.
+Enhanced caching system for the Polaris knowledge graph framework.
 
-This module provides a thread-safe Least Recently Used (LRU) cache implementation
-with time-based expiration. It offers:
-- Generic caching for any type of object
-- Thread-safe operations
-- Time-based expiration (TTL)
-- Custom serialization/deserialization
-- Batch operations
-- Automatic cleanup of expired items
-- Size-based eviction using LRU policy
-
-The cache is particularly optimized for storing knowledge graph entities and
-relations, improving access times for frequently used data.
+This module provides an advanced caching implementation with:
+- LRU (Least Recently Used) eviction
+- Adaptive TTL based on access patterns
+- Performance monitoring capabilities
 """
 
-import logging
-import threading
-import time
-from collections import OrderedDict
-from dataclasses import asdict
-from typing import Callable, Dict, Generic, List, Optional, TypeVar
-
-from ..core.exceptions import CacheError
-
-logger = logging.getLogger(__name__)
+from typing import TypeVar, Generic, Dict, Optional, Any
+from dataclasses import dataclass
+from time import time
+import math
+import json
 
 T = TypeVar("T")
 
 
-class LRUCache(Generic[T]):
+@dataclass
+class CacheEntry(Generic[T]):
     """
-    Thread-safe LRU cache implementation with time-based expiration.
-
-    This class implements a Least Recently Used (LRU) cache with the following features:
-    - Thread-safe operations using RLock
-    - Time-based expiration (TTL)
-    - Maximum size limit with LRU eviction
-    - Custom serialization/deserialization support
-    - Batch operations for multiple items
-    - Automatic cleanup of expired items
-
-    The cache is generic and can store any type of object, with optional
-    custom serialization/deserialization for complex objects.
+    Cache entry containing value and metadata for tracking usage patterns.
 
     Attributes:
-        max_size (int): Maximum number of items the cache can hold
-        ttl (int): Time to live in seconds for cached items
-        cache (OrderedDict): Ordered dictionary storing cached items and timestamps
-        lock (threading.RLock): Reentrant lock for thread safety
-        serializer (Callable): Function to serialize items for storage
-        deserializer (Callable): Function to deserialize stored items
+        value: The cached value
+        timestamp: Time when the entry was last accessed
+        access_count: Number of times the entry has been accessed
+    """
+
+    value: T
+    timestamp: float
+    access_count: int
+
+
+class CacheMetrics:
+    """Tracks cache performance metrics."""
+
+    def __init__(self):
+        self.hits: int = 0
+        self.misses: int = 0
+        self.evictions: int = 0
+        self.total_access_time: float = 0
+        self.access_count: int = 0
+
+    @property
+    def hit_rate(self) -> float:
+        """Calculate cache hit rate."""
+        total = self.hits + self.misses
+        return self.hits / total if total > 0 else 0
+
+    @property
+    def avg_access_time(self) -> float:
+        """Calculate average access time in milliseconds."""
+        return (self.total_access_time / self.access_count * 1000) if self.access_count > 0 else 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert metrics to dictionary format."""
+        return {
+            "hits": self.hits,
+            "misses": self.misses,
+            "evictions": self.evictions,
+            "hit_rate": self.hit_rate,
+            "avg_access_time_ms": self.avg_access_time,
+        }
+
+
+class LRUCache(Generic[T]):
+    """
+    Enhanced LRU cache with adaptive TTL and performance monitoring.
+
+    Features:
+    - LRU eviction policy
+    - Adaptive TTL based on access patterns
+    - Performance metrics tracking
+    - Configurable size and TTL parameters
     """
 
     def __init__(
         self,
         max_size: int = 1000,
-        ttl: int = 3600,  # Time to live in seconds
-        serializer: Optional[Callable[[T], Dict]] = None,
-        deserializer: Optional[Callable[[Dict], T]] = None,
+        base_ttl: int = 3600,
+        adaptive_ttl: bool = True,
+        min_ttl: int = 300,
+        max_ttl: int = 86400,
     ):
         """
-        Initialize LRU cache.
+        Initialize the cache.
 
         Args:
-            max_size: Maximum number of items in cache (default: 1000)
-            ttl: Time to live in seconds (default: 1 hour)
-            serializer: Optional function to serialize items for storage
-            deserializer: Optional function to deserialize stored items
-
-        The serializer and deserializer are optional but recommended for complex
-        objects to ensure proper storage and retrieval.
+            max_size: Maximum number of entries
+            base_ttl: Base time-to-live in seconds
+            adaptive_ttl: Whether to adjust TTL based on access patterns
+            min_ttl: Minimum TTL in seconds
+            max_ttl: Maximum TTL in seconds
         """
-        self.max_size = max_size
-        self.ttl = ttl
-        self.cache: OrderedDict[str, tuple[T, float]] = OrderedDict()
-        self.lock = threading.RLock()
-        self.serializer = serializer or (lambda x: asdict(x))
-        self.deserializer = deserializer or (lambda x: x)
-        self._setup_logging()
-
-    def _setup_logging(self) -> None:
-        """
-        Configure cache logging.
-
-        Sets up file-based logging for cache operations with timestamp,
-        log level, and formatted messages.
-        """
-        handler = logging.FileHandler("cache.log")
-        formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
+        self._cache: Dict[str, CacheEntry[T]] = {}
+        self._max_size = max_size
+        self._base_ttl = base_ttl
+        self._adaptive_ttl = adaptive_ttl
+        self._min_ttl = min_ttl
+        self._max_ttl = max_ttl
+        self.metrics = CacheMetrics()
 
     def get(self, key: str) -> Optional[T]:
         """
-        Retrieve an item from the cache.
-
-        This method checks for item existence and expiration, updating
-        the item's position in the LRU order if it's accessed.
-
-        Args:
-            key: Cache key to retrieve
-
-        Returns:
-            Cached item if found and not expired, None otherwise
-
-        Thread Safety:
-            This method is thread-safe, protected by the cache's lock.
-        """
-        with self.lock:
-            if key not in self.cache:
-                return None
-
-            item, timestamp = self.cache[key]
-            if time.time() - timestamp > self.ttl:
-                del self.cache[key]
-                return None
-
-            # Move to end (most recently used)
-            self.cache.move_to_end(key)
-            return item
-
-    def put(self, key: str, item: T) -> None:
-        """
-        Add an item to the cache.
-
-        This method adds or updates an item in the cache, handling LRU eviction
-        if the cache is full and updating timestamps for existing items.
+        Retrieve a value from the cache.
 
         Args:
             key: Cache key
-            item: Item to cache
-
-        Raises:
-            CacheError: If serialization fails or other cache operations fail
-
-        Thread Safety:
-            This method is thread-safe, protected by the cache's lock.
-        """
-        try:
-            with self.lock:
-                if key in self.cache:
-                    # Update existing item
-                    self.cache.move_to_end(key)
-                    self.cache[key] = (item, time.time())
-                else:
-                    # Add new item
-                    if len(self.cache) >= self.max_size:
-                        # Remove least recently used item
-                        self.cache.popitem(last=False)
-                    self.cache[key] = (item, time.time())
-        except Exception as e:
-            logger.error(f"Failed to cache item with key {key}: {str(e)}")
-            raise CacheError(f"Failed to cache item: {str(e)}")
-
-    def delete(self, key: str) -> bool:
-        """
-        Remove an item from the cache.
-
-        Args:
-            key: Cache key to remove
 
         Returns:
-            True if item was found and deleted, False otherwise
-
-        Thread Safety:
-            This method is thread-safe, protected by the cache's lock.
+            Cached value if present and not expired, None otherwise
         """
-        with self.lock:
-            if key in self.cache:
-                del self.cache[key]
-                return True
-            return False
+        start_time = time()
+
+        try:
+            if key not in self._cache:
+                self.metrics.misses += 1
+                return None
+
+            entry = self._cache[key]
+            current_time = time()
+
+            # Check if entry has expired
+            ttl = self._calculate_ttl(entry.access_count)
+            if current_time - entry.timestamp > ttl:
+                del self._cache[key]
+                self.metrics.evictions += 1
+                self.metrics.misses += 1
+                return None
+
+            # Update access statistics
+            entry.access_count += 1
+            entry.timestamp = current_time
+            self.metrics.hits += 1
+            return entry.value
+
+        finally:
+            self.metrics.total_access_time += time() - start_time
+            self.metrics.access_count += 1
+
+    def put(self, key: str, value: T) -> None:
+        """
+        Store a value in the cache.
+
+        Args:
+            key: Cache key
+            value: Value to cache
+        """
+        # Evict least recently used items if cache is full
+        if len(self._cache) >= self._max_size:
+            self._evict_lru()
+
+        self._cache[key] = CacheEntry(value=value, timestamp=time(), access_count=1)
+
+    def _calculate_ttl(self, access_count: int) -> float:
+        """
+        Calculate TTL based on access frequency if adaptive TTL is enabled.
+
+        Args:
+            access_count: Number of times entry has been accessed
+
+        Returns:
+            TTL in seconds
+        """
+        if not self._adaptive_ttl:
+            return self._base_ttl
+
+        # Increase TTL for frequently accessed items
+        ttl = self._base_ttl * (1 + math.log(access_count))
+        return max(min(ttl, self._max_ttl), self._min_ttl)
+
+    def _evict_lru(self) -> None:
+        """Evict least recently used or expired items."""
+        current_time = time()
+
+        # First try to remove expired items
+        expired = [
+            k
+            for k, e in self._cache.items()
+            if current_time - e.timestamp > self._calculate_ttl(e.access_count)
+        ]
+
+        for key in expired:
+            del self._cache[key]
+            self.metrics.evictions += 1
+
+        # If no expired items, remove least accessed
+        if not expired and self._cache:
+            key_to_remove = min(
+                self._cache.items(), key=lambda x: (x[1].access_count, -x[1].timestamp)
+            )[0]
+            del self._cache[key_to_remove]
+            self.metrics.evictions += 1
 
     def clear(self) -> None:
+        """Clear all cache entries."""
+        self._cache.clear()
+        self.metrics = CacheMetrics()
+
+    def get_metrics(self) -> Dict[str, Any]:
         """
-        Clear all items from the cache.
-
-        Removes all items from the cache regardless of their expiration status.
-
-        Thread Safety:
-            This method is thread-safe, protected by the cache's lock.
-        """
-        with self.lock:
-            self.cache.clear()
-
-    def get_many(self, keys: List[str]) -> Dict[str, T]:
-        """
-        Retrieve multiple items from the cache.
-
-        This method efficiently retrieves multiple items in a single operation,
-        handling expiration and updating LRU order for all accessed items.
-
-        Args:
-            keys: List of cache keys to retrieve
+        Get current cache performance metrics.
 
         Returns:
-            Dictionary mapping found keys to their cached items
-
-        Thread Safety:
-            This method is thread-safe, protected by the cache's lock.
+            Dictionary containing cache metrics
         """
-        result = {}
-        with self.lock:
-            for key in keys:
-                item = self.get(key)
-                if item is not None:
-                    result[key] = item
-        return result
-
-    def put_many(self, items: Dict[str, T]) -> None:
-        """
-        Add multiple items to the cache.
-
-        This method efficiently adds multiple items in a single operation,
-        handling LRU eviction and timestamp updates as needed.
-
-        Args:
-            items: Dictionary mapping keys to items for caching
-
-        Thread Safety:
-            This method is thread-safe, protected by the cache's lock.
-        """
-        with self.lock:
-            for key, item in items.items():
-                self.put(key, item)
-
-    def get_size(self) -> int:
-        """
-        Get current cache size.
-
-        Returns:
-            Number of items currently in the cache
-
-        Thread Safety:
-            This method is thread-safe, protected by the cache's lock.
-        """
-        with self.lock:
-            return len(self.cache)
-
-    def cleanup_expired(self) -> int:
-        """
-        Remove expired items from cache.
-
-        This method removes all items that have exceeded their TTL,
-        freeing up space in the cache.
-
-        Returns:
-            Number of expired items removed
-
-        Thread Safety:
-            This method is thread-safe, protected by the cache's lock.
-        """
-        removed = 0
-        current_time = time.time()
-        with self.lock:
-            keys_to_remove = [
-                key
-                for key, (_, timestamp) in self.cache.items()
-                if current_time - timestamp > self.ttl
-            ]
-            for key in keys_to_remove:
-                del self.cache[key]
-                removed += 1
-        return removed
+        return {"size": len(self._cache), "max_size": self._max_size, **self.metrics.to_dict()}

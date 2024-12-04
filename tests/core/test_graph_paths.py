@@ -3,6 +3,7 @@ Tests for graph path finding algorithms.
 """
 
 from datetime import datetime
+from time import sleep
 from typing import Iterator, List, Set, Tuple, Union, cast
 
 import pytest
@@ -360,3 +361,106 @@ def test_find_paths_different_types(cyclic_graph):
     assert len(paths) == 1  # Only A->D->E matches filter
     # Check length property on PathResult objects
     assert all(path_result.length == 2 for path_result in paths)
+
+
+# New tests for bidirectional search and caching
+
+
+def test_bidirectional_search_basic(cyclic_graph):
+    """Test basic bidirectional search functionality."""
+    result = PathFinding.bidirectional_search(cyclic_graph, "A", "E")
+    assert isinstance(result, PathResult)
+    assert result.nodes[0] == "A"
+    assert result.nodes[-1] == "E"
+    assert len(result) == 2  # A->D->E is shortest
+
+
+def test_bidirectional_search_with_depth_limit(cyclic_graph):
+    """Test bidirectional search respects depth limit."""
+    # Test with depth limit that should allow finding path
+    result = PathFinding.bidirectional_search(cyclic_graph, "A", "E", max_depth=2)
+    assert isinstance(result, PathResult)
+    assert len(result) <= 2
+
+    # Test with depth limit that should prevent finding path
+    with pytest.raises(GraphOperationError):
+        PathFinding.bidirectional_search(cyclic_graph, "A", "E", max_depth=1)
+
+
+def test_bidirectional_search_with_weights(cyclic_graph):
+    """Test bidirectional search with custom weight function."""
+
+    def weight_func(edge: Edge) -> float:
+        return 1.0 / edge.impact_score  # Higher impact means lower weight
+
+    result = PathFinding.bidirectional_search(cyclic_graph, "A", "E", weight_func=weight_func)
+    assert isinstance(result, PathResult)
+    # Should prefer path with higher impact scores
+    assert result.nodes == ["A", "B", "C", "E"]
+
+
+def test_caching_behavior(cyclic_graph):
+    """Test that path finding results are properly cached."""
+    # Clear cache before testing
+    PathFinding._path_cache.clear()
+
+    # First search should miss cache
+    result1 = PathFinding.bidirectional_search(cyclic_graph, "A", "E")
+    metrics1 = PathFinding.get_cache_metrics()
+    assert metrics1["hits"] == 0
+    assert metrics1["misses"] > 0
+
+    # Second search should hit cache
+    result2 = PathFinding.bidirectional_search(cyclic_graph, "A", "E")
+    metrics2 = PathFinding.get_cache_metrics()
+    assert metrics2["hits"] == 1
+
+    # Results should be identical
+    assert result1.nodes == result2.nodes
+    assert result1.total_weight == result2.total_weight
+
+
+def test_cache_expiration(cyclic_graph):
+    """Test that cached results expire correctly."""
+    # Configure cache with short TTL for testing
+    original_cache = PathFinding._path_cache
+    try:
+        PathFinding._path_cache = PathFinding._path_cache.__class__(
+            max_size=1000, base_ttl=1, adaptive_ttl=False  # 1 second TTL
+        )
+
+        # First search
+        PathFinding.bidirectional_search(cyclic_graph, "A", "E")
+
+        # Wait for cache to expire
+        sleep(1.1)
+
+        # Search again - should miss cache
+        PathFinding.bidirectional_search(cyclic_graph, "A", "E")
+        metrics = PathFinding.get_cache_metrics()
+        assert metrics["misses"] >= 2
+    finally:
+        # Restore original cache
+        PathFinding._path_cache = original_cache
+
+
+def test_cache_metrics(cyclic_graph):
+    """Test cache metrics collection."""
+    # Clear cache and metrics
+    PathFinding._path_cache.clear()
+
+    # Perform multiple searches
+    for _ in range(3):
+        PathFinding.bidirectional_search(cyclic_graph, "A", "E")
+
+    metrics = PathFinding.get_cache_metrics()
+    assert isinstance(metrics, dict)
+    assert "size" in metrics
+    assert "hits" in metrics
+    assert "misses" in metrics
+    assert "hit_rate" in metrics
+    assert isinstance(metrics["avg_access_time_ms"], float)
+
+    # Verify hit rate calculation
+    assert 0 <= metrics["hit_rate"] <= 1.0
+    assert metrics["hits"] + metrics["misses"] > 0
