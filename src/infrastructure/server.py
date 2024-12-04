@@ -121,9 +121,7 @@ async def handle_list_tools() -> List[types.Tool]:
             description="Retrieve multiple nodes by their IDs",
             inputSchema={
                 "type": "object",
-                "properties": {
-                    "node_ids": {"type": "array", "items": {"type": "string"}}
-                },
+                "properties": {"node_ids": {"type": "array", "items": {"type": "string"}}},
                 "required": ["node_ids"],
             },
         ),
@@ -132,9 +130,7 @@ async def handle_list_tools() -> List[types.Tool]:
             description="Retrieve multiple edges by their IDs",
             inputSchema={
                 "type": "object",
-                "properties": {
-                    "edge_ids": {"type": "array", "items": {"type": "string"}}
-                },
+                "properties": {"edge_ids": {"type": "array", "items": {"type": "string"}}},
                 "required": ["edge_ids"],
             },
         ),

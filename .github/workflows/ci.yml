@@ -33,6 +33,9 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
 
+      - name: Set PYTHONPATH
+        run: echo "PYTHONPATH=src" >> $GITHUB_ENV
+
       - name: Run tests with pytest and coverage
         run: |
           pytest --cov=src --cov-report=xml
