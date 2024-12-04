@@ -1,0 +1,265 @@
+async def example_llm_interactions():
+    """Examples of how an LLM would use these services via MCP"""
+    
+    services = LLMEnhancementServices(entity_repository)
+    
+    # Example 1: Validate a reasoning chain
+    reasoning = StructuredReasoning(
+        reasoning_type=ReasoningType.CAUSAL,
+        premises=[
+            "High network latency impacts user experience",
+            "User experience affects customer retention"
+        ],
+        intermediate_steps=[
+            "Poor user experience leads to frustration",
+            "Frustrated users are more likely to churn"
+        ],
+        conclusion="High network latency increases customer churn",
+        confidence=0.85,
+        evidence_paths=["metrics/latency", "analytics/retention"]
+    )
+    
+    validation = await services.validate_reasoning_chain(reasoning)
+    if not validation.is_valid:
+        # LLM would adjust its reasoning based on:
+        print(f"Inconsistencies: {validation.inconsistencies}")
+        print(f"Missing evidence: {validation.missing_evidence}")
+        
+    # Example 2: Explore counterfactuals for system design
+    counterfactuals = await services.find_counterfactuals(
+        "caching_system",
+        max_variations=3
+    )
+    
+    for cf in counterfactuals:
+        # LLM would analyze alternative system designs:
+        print(f"Alternative scenario: {cf['modified_scenario']}")
+        print(f"Potential impacts: {cf['impact_analysis']}")
+        
+    # Example 3: Verify temporal consistency in a migration plan
+    events = [
+        {
+            "timestamp": "2024-01-01T00:00:00Z",
+            "event": "Begin database migration",
+            "dependencies": []
+        },
+        {
+            "timestamp": "2024-01-01T02:00:00Z",
+            "event": "Update application code",
+            "dependencies": ["database_migration"]
+        },
+        {
+            "timestamp": "2024-01-01T01:00:00Z",
+            "event": "Deploy new schema",
+            "dependencies": ["database_migration"]
+        }
+    ]
+    
+    temporal_check = await services.temporal_consistency_check(events)
+    if not temporal_check["is_consistent"]:
+        # LLM would correct the event sequence:
+        print(f"Timeline issues: {temporal_check['inconsistencies']}")
+        
+    # Example 4: Build evidence for a technical recommendation
+    claim = "Switching to microservices will improve system scalability"
+    evidence_paths = await services.generate_evidence_paths(claim)
+    
+    strong_evidence = [
+        path for path in evidence_paths 
+        if path["confidence"] > 0.8
+    ]
+    
+    # LLM would incorporate evidence into its response:
+    if strong_evidence:
+        print("Supporting evidence found:")
+        for evidence in strong_evidence:
+            print(f"- Evidence path: {evidence['path']}")
+            print(f"- Confidence: {evidence['confidence']}")
+            
+    # Example 5: Pattern matching for architectural decisions
+    pattern = {
+        "type": "architectural_pattern",
+        "problem": "high_load",
+        "solution": "caching",
+        "context": "web_application"
+    }
+    
+    current_context = {
+        "scale": "large",
+        "domain": "e-commerce",
+        "constraints": ["high_availability", "low_latency"]
+    }
+    
+    matches = await services.contextual_pattern_matching(pattern, current_context)
+    
+    # LLM would use pattern matches to inform recommendations:
+    for match in matches:
+        print(f"Similar pattern found in: {match['entity'].name}")
+        print(f"Contextual relevance: {match['contextual_relevance']}")
+        print(f"Matching attributes: {match['matching_attributes']}")
+
+    # Example 6: Complex System Analysis
+    async def analyze_system_change(
+        change_proposal: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Example of how an LLM would analyze a complex system change
+        using multiple services together.
+        """
+        results = {
+            "feasibility": 0.0,
+            "risks": [],
+            "recommendations": [],
+            "confidence": 0.0
+        }
+        
+        # 1. Validate the reasoning behind the change
+        reasoning = StructuredReasoning(
+            reasoning_type=ReasoningType.CAUSAL,
+            premises=[
+                f"Current system has {change_proposal['current_issue']}",
+                f"Proposed change implements {change_proposal['solution']}"
+            ],
+            intermediate_steps=[
+                f"Solution addresses issue by {change_proposal['mechanism']}",
+                f"Similar patterns have succeeded in {change_proposal['precedents']}"
+            ],
+            conclusion=f"Change will improve {change_proposal['target_metric']}",
+            confidence=0.8,
+            evidence_paths=[]
+        )
+        
+        validation = await services.validate_reasoning_chain(reasoning)
+        if not validation.is_valid:
+            results["risks"].extend(validation.inconsistencies)
+            
+        # 2. Explore potential failure modes
+        counterfactuals = await services.find_counterfactuals(
+            change_proposal["affected_system"],
+            max_variations=3
+        )
+        
+        for cf in counterfactuals:
+            if cf["impact_analysis"]["severity"] > 0.7:
+                results["risks"].append({
+                    "type": "potential_failure",
+                    "scenario": cf["modified_scenario"],
+                    "impact": cf["impact_analysis"]
+                })
+                
+        # 3. Check implementation timeline
+        timeline = [
+            {
+                "timestamp": change_proposal["start_time"],
+                "event": "Begin implementation",
+                "dependencies": []
+            },
+            {
+                "timestamp": change_proposal["testing_time"],
+                "event": "System testing",
+                "dependencies": ["implementation"]
+            },
+            {
+                "timestamp": change_proposal["deployment_time"],
+                "event": "Production deployment",
+                "dependencies": ["testing"]
+            }
+        ]
+        
+        temporal_check = await services.temporal_consistency_check(timeline)
+        if not temporal_check["is_consistent"]:
+            results["risks"].extend(
+                [f"Timeline issue: {i['reason']}" for i in temporal_check["inconsistencies"]]
+            )
+            
+        # 4. Find supporting evidence
+        evidence = await services.generate_evidence_paths(
+            f"{change_proposal['solution']} improves {change_proposal['target_metric']}"
+        )
+        
+        strong_evidence = [e for e in evidence if e["confidence"] > 0.7]
+        results["confidence"] = np.mean([e["confidence"] for e in strong_evidence]) if strong_evidence else 0.0
+        
+        # 5. Look for similar patterns
+        pattern = {
+            "type": "system_change",
+            "problem": change_proposal["current_issue"],
+            "solution": change_proposal["solution"]
+        }
+        
+        context = {
+            "scale": change_proposal["system_scale"],
+            "domain": change_proposal["system_domain"],
+            "constraints": change_proposal["constraints"]
+        }
+        
+        matches = await services.contextual_pattern_matching(pattern, context)
+        
+        # Generate recommendations based on all analysis
+        if results["confidence"] > 0.7 and len(results["risks"]) < 3:
+            results["feasibility"] = 0.8
+            results["recommendations"].append({
+                "type": "proceed",
+                "rationale": "High confidence and manageable risks",
+                "supporting_evidence": [e["path"] for e in strong_evidence]
+            })
+        elif len(results["risks"]) > 5:
+            results["feasibility"] = 0.2
+            results["recommendations"].append({
+                "type": "reconsider",
+                "rationale": "Multiple significant risks identified",
+                "alternative_approaches": [
+                    m["entity"].name for m in matches 
+                    if m["similarity"] > 0.8
+                ]
+            })
+        else:
+            results["feasibility"] = 0.5
+            results["recommendations"].append({
+                "type": "modify",
+                "rationale": "Medium confidence with some risks",
+                "suggested_modifications": [
+                    f"Address risk: {risk}" for risk in results["risks"]
+                ]
+            })
+            
+        return results
+
+    # Example usage of complex analysis
+    change_proposal = {
+        "current_issue": "high_latency",
+        "solution": "distributed_caching",
+        "mechanism": "reducing_database_load",
+        "precedents": "similar_ecommerce_systems",
+        "target_metric": "response_time",
+        "affected_system": "order_processing",
+        "start_time": "2024-03-01T00:00:00Z",
+        "testing_time": "2024-03-15T00:00:00Z",
+        "deployment_time": "2024-04-01T00:00:00Z",
+        "system_scale": "large",
+        "system_domain": "e-commerce",
+        "constraints": ["high_availability", "data_consistency"]
+    }
+    
+    analysis_results = await analyze_system_change(change_proposal)
+    
+    # LLM would use these results to generate a comprehensive response
+    if analysis_results["feasibility"] > 0.7:
+        print("Recommended approach:")
+        for rec in analysis_results["recommendations"]:
+            print(f"- {rec['rationale']}")
+            print(f"- Supporting evidence: {rec['supporting_evidence']}")
+    else:
+        print("Concerns identified:")
+        for risk in analysis_results["risks"]:
+            print(f"- {risk}")
+        print("\nAlternative recommendations:")
+        for rec in analysis_results["recommendations"]:
+            if rec["type"] in ["modify", "reconsider"]:
+                print(f"- {rec['rationale']}")
+                if "suggested_modifications" in rec:
+                    for mod in rec["suggested_modifications"]:
+                        print(f"  * {mod}")
+                if "alternative_approaches" in rec:
+                    for alt in rec["alternative_approaches"]:
+                        print(f"  * Consider: {alt}")
