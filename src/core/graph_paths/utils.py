@@ -1,68 +1,52 @@
 """
-Utility functions for graph path finding.
+Utility functions for path finding operations.
 
-This module provides common utility functions used across different path finding
+This module provides helper functions used across different path finding
 algorithms, including:
-- Edge weight calculation with custom weight functions
-- Path weight calculation
 - Path result creation
-
-These utilities ensure consistent behavior across all path finding implementations
-while providing flexibility through custom weight functions.
-
-Example:
-    >>> weight = get_edge_weight(edge, lambda e: e.metadata.weight)
-    >>> path_weight = calculate_path_weight(edges, weight_func)
-    >>> result = create_path_result(edges, weight_func, graph)
+- Weight calculation
+- Path validation
 """
 
-from typing import Callable, List, Optional
+from typing import List, Optional, TypeVar, Callable, Union
 
 from ..graph import Graph
 from ..models import Edge
 from .models import PathResult
 
-# Type aliases
-Weight = float
-WeightFunc = Callable[[Edge], Weight]
+# Type alias for weight functions
+WeightFunc = Callable[[Edge], float]
 
 
-def get_edge_weight(edge: Edge, weight_func: Optional[WeightFunc]) -> Weight:
+def get_edge_weight(edge: Edge, weight_func: Optional[WeightFunc] = None) -> float:
     """
-    Calculate edge weight using optional weight function.
-
-    This function applies a custom weight function to an edge or uses
-    a default weight of 1.0 if no function is provided.
+    Get weight of an edge using optional weight function.
 
     Args:
-        edge: The edge to calculate weight for
+        edge: Edge to get weight for
         weight_func: Optional function to calculate custom weight
 
     Returns:
-        The calculated edge weight
+        Weight of the edge
 
     Raises:
-        ValueError: If weight_func returns zero or negative value
+        ValueError: If weight function returns non-positive value
 
     Example:
-        >>> weight = get_edge_weight(edge, lambda e: e.metadata.confidence)
-        >>> print(f"Edge weight: {weight}")
+        >>> weight = get_edge_weight(edge, lambda e: e.metadata.weight)
     """
-    weight = weight_func(edge) if weight_func is not None else 1.0
+    if weight_func is None:
+        return 1.0
+
+    weight = weight_func(edge)
     if weight <= 0:
-        raise ValueError(
-            f"Edge weight must be positive. Got {weight} for "
-            f"edge {edge.from_entity}->{edge.to_entity}"
-        )
+        raise ValueError("Edge weight must be positive")
     return weight
 
 
-def calculate_path_weight(path: List[Edge], weight_func: Optional[WeightFunc]) -> float:
+def calculate_path_weight(path: List[Edge], weight_func: Optional[WeightFunc] = None) -> float:
     """
-    Calculate total path weight.
-
-    Computes the total weight of a path by summing the weights of all edges,
-    using either custom weight function or default weights.
+    Calculate total weight of a path.
 
     Args:
         path: List of edges forming the path
@@ -72,10 +56,16 @@ def calculate_path_weight(path: List[Edge], weight_func: Optional[WeightFunc]) -
         Total weight of the path
 
     Example:
-        >>> total = calculate_path_weight(path, lambda e: e.impact_score)
-        >>> print(f"Total path weight: {total}")
+        >>> total = calculate_path_weight(path, lambda e: e.metadata.weight)
     """
-    return sum(get_edge_weight(edge, weight_func) for edge in path)
+    if not path:
+        return 0.0
+
+    if weight_func is None:
+        # Default to weight of 1.0 per edge
+        return float(len(path))
+
+    return sum(weight_func(edge) for edge in path)
 
 
 def create_path_result(
@@ -97,10 +87,8 @@ def create_path_result(
 
     Example:
         >>> result = create_path_result(path, lambda e: e.metadata.weight, graph)
-        >>> print(f"Path length: {result.length}")
+        >>> print(f"Path length: {len(result)}")
         >>> print(f"Total weight: {result.total_weight}")
     """
     total_weight = calculate_path_weight(path, weight_func)
-    result = PathResult(path=path, total_weight=total_weight, length=len(path))
-    # Don't validate here - let the caller handle validation
-    return result
+    return PathResult(path=path, total_weight=total_weight)
