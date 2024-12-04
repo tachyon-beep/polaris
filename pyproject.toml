@@ -3,7 +3,7 @@ requires = ["setuptools>=64", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools_scm]
-write_to = "src/_version.py"
+write_to = "src/polaris/_version.py"
 version_scheme = "guess-next-dev"
 local_scheme = "dirty-tag"
 
@@ -73,7 +73,7 @@ dev = [
 
 [tool.pytest.ini_options]
 minversion = "7.0"
-addopts = "-ra -q --cov=src"
+addopts = "-ra -q --cov=src/polaris"
 testpaths = [
     "tests",
 ]
@@ -92,7 +92,7 @@ include = '\\.pyi?$'
 profile = "black"
 line_length = 100
 multi_line_output = 3
-src_paths = ["src", "tests"]
+src_paths = ["src/polaris", "tests"]
 
 [tool.mypy]
 python_version = "3.12"
@@ -120,5 +120,5 @@ exclude = [
     ".venv",
     "build",
     "dist",
-    "src/_version.py",
+    "src/polaris/_version.py",
 ]

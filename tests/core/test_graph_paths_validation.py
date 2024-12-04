@@ -9,10 +9,10 @@ import pytest
 from datetime import datetime
 from typing import List
 
-from src.core.enums import EntityType, RelationType
-from src.core.graph import Graph
-from src.core.models import Edge, EdgeMetadata, Node, NodeMetadata
-from src.core.graph_paths.models import PathResult, PathValidationError
+from polaris.core.enums import EntityType, RelationType
+from polaris.core.graph import Graph
+from polaris.core.models import Edge, EdgeMetadata, Node, NodeMetadata
+from polaris.core.graph_paths.models import PathResult, PathValidationError
 
 
 @pytest.fixture

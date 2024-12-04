@@ -7,10 +7,10 @@ from typing import cast
 
 import pytest
 
-from src.core.enums import EntityType, RelationType
-from src.core.exceptions import GraphOperationError, ValidationError
-from src.core.graph import Graph
-from src.core.models import Edge, EdgeMetadata, Node, NodeMetadata, NodeMetrics
+from polaris.core.enums import EntityType, RelationType
+from polaris.core.exceptions import GraphOperationError, ValidationError
+from polaris.core.graph import Graph
+from polaris.core.models import Edge, EdgeMetadata, Node, NodeMetadata, NodeMetrics
 
 
 @pytest.fixture

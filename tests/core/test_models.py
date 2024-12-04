@@ -7,8 +7,8 @@ from typing import cast
 
 import pytest
 
-from src.core.enums import EntityType, RelationType
-from src.core.models import Edge, EdgeMetadata, Node, NodeMetadata, NodeMetrics
+from polaris.core.enums import EntityType, RelationType
+from polaris.core.models import Edge, EdgeMetadata, Node, NodeMetadata, NodeMetrics
 
 
 @pytest.fixture

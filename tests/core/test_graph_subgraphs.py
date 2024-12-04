@@ -6,11 +6,11 @@ from datetime import datetime
 
 import pytest
 
-from src.core.enums import EntityType, RelationType
-from src.core.exceptions import NodeNotFoundError
-from src.core.graph import Graph
-from src.core.graph_subgraphs import SubgraphExtraction
-from src.core.models import Edge, EdgeMetadata, Node
+from polaris.core.enums import EntityType, RelationType
+from polaris.core.exceptions import NodeNotFoundError
+from polaris.core.graph import Graph
+from polaris.core.graph_subgraphs import SubgraphExtraction
+from polaris.core.models import Edge, EdgeMetadata, Node
 
 
 @pytest.fixture

@@ -6,10 +6,10 @@ from datetime import datetime
 
 import pytest
 
-from src.core.enums import RelationType
-from src.core.exceptions import EdgeNotFoundError, NodeNotFoundError
-from src.core.graph import Graph
-from src.core.models import Edge, EdgeMetadata
+from polaris.core.enums import RelationType
+from polaris.core.exceptions import EdgeNotFoundError, NodeNotFoundError
+from polaris.core.graph import Graph
+from polaris.core.models import Edge, EdgeMetadata
 
 
 @pytest.fixture

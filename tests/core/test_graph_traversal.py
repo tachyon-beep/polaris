@@ -6,11 +6,11 @@ from datetime import datetime
 
 import pytest
 
-from src.core.enums import RelationType
-from src.core.exceptions import NodeNotFoundError
-from src.core.graph import Graph
-from src.core.graph_traversal import GraphTraversal, TraversalStrategy
-from src.core.models import Edge, EdgeMetadata
+from polaris.core.enums import RelationType
+from polaris.core.exceptions import NodeNotFoundError
+from polaris.core.graph import Graph
+from polaris.core.graph_traversal import GraphTraversal, TraversalStrategy
+from polaris.core.models import Edge, EdgeMetadata
 
 
 @pytest.fixture

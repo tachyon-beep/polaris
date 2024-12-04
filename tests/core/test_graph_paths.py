@@ -8,18 +8,18 @@ from typing import Iterator, List, Set, Tuple, Union, cast
 
 import pytest
 
-from src.core.enums import RelationType
-from src.core.exceptions import GraphOperationError, NodeNotFoundError
-from src.core.graph import Graph
-from src.core.graph_paths import (
+from polaris.core.enums import RelationType
+from polaris.core.exceptions import GraphOperationError, NodeNotFoundError
+from polaris.core.graph import Graph
+from polaris.core.graph_paths import (
     DEFAULT_MAX_PATH_LENGTH,
     PathFinding,
     PathResult,
     PathType,
     PathValidationError,
 )
-from src.core.graph_paths.cache import PathCache
-from src.core.models import Edge, EdgeMetadata
+from polaris.core.graph_paths.cache import PathCache
+from polaris.core.models import Edge, EdgeMetadata
 
 
 @pytest.fixture
