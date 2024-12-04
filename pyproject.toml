@@ -113,3 +113,6 @@ packages = ["src"]
 [tool.sphinx]
 source_suffix = [".rst", ".md"]
 extensions = ["myst_parser"]
+
+[tool.hatch.version]
+source = "setuptools-scm"
