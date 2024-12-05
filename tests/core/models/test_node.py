@@ -1,5 +1,5 @@
 """
-Tests for core data models.
+Tests for node models.
 """
 
 from datetime import datetime, timedelta
@@ -7,8 +7,8 @@ from typing import cast
 
 import pytest
 
-from polaris.core.enums import EntityType, RelationType
-from polaris.core.models import Edge, EdgeMetadata, Node, NodeMetadata, NodeMetrics
+from polaris.core.enums import EntityType
+from polaris.core.models import Node, NodeMetadata, NodeMetrics
 
 
 @pytest.fixture
@@ -25,20 +25,6 @@ def sample_node_metadata():
         metrics=NodeMetrics(
             complexity=0.5, reliability=0.8, coverage=0.7, impact=0.6, confidence=0.9
         ),
-    )
-
-
-@pytest.fixture
-def sample_edge_metadata():
-    """Fixture providing sample edge metadata."""
-    return EdgeMetadata(
-        created_at=datetime.now(),
-        last_modified=datetime.now(),
-        confidence=0.9,
-        source="test_source",
-        bidirectional=False,
-        temporal=False,
-        weight=1.0,
     )
 
 
@@ -72,27 +58,6 @@ def test_node_creation(sample_node_metadata):
     assert node.metadata.metrics.complexity == pytest.approx(0.5)
 
 
-def test_edge_creation(sample_edge_metadata):
-    """Test basic edge creation and properties."""
-    edge = Edge(
-        from_entity="node1",
-        to_entity="node2",
-        relation_type=RelationType.DEPENDS_ON,
-        metadata=sample_edge_metadata,
-        context="Test context",
-        impact_score=0.8,
-    )
-
-    assert edge.from_entity == "node1"
-    assert edge.to_entity == "node2"
-    assert edge.relation_type == RelationType.DEPENDS_ON
-    assert edge.context == "Test context"
-    assert edge.impact_score == pytest.approx(0.8)
-    assert edge.metadata.confidence == pytest.approx(0.9)
-    assert not edge.metadata.bidirectional
-    assert edge.metadata.weight == pytest.approx(1.0)
-
-
 def test_node_metrics_validation():
     """Test validation of node metrics with invalid values."""
     with pytest.raises(ValueError):
@@ -102,17 +67,6 @@ def test_node_metrics_validation():
             coverage=0.7,
             impact=0.6,
             confidence=0.9,
-        )
-
-
-def test_edge_metadata_validation():
-    """Test validation of edge metadata."""
-    with pytest.raises(ValueError):
-        EdgeMetadata(
-            created_at=datetime.now(),
-            last_modified=datetime.now(),
-            confidence=1.5,  # Should be between 0 and 1
-            source="test_source",
         )
 
 
@@ -131,24 +85,6 @@ def test_node_with_custom_attributes(sample_node_metadata):
     assert node.attributes["priority"] == "high"
     assert node.attributes["category"] == "service"
     assert node.attributes["team"] == "backend"
-
-
-def test_edge_with_custom_attributes(sample_edge_metadata):
-    """Test edge creation with custom attributes."""
-    custom_attributes = {"strength": "strong", "reviewed": True, "reviewer": "john.doe"}
-
-    edge = Edge(
-        from_entity="node1",
-        to_entity="node2",
-        relation_type=RelationType.DEPENDS_ON,
-        metadata=sample_edge_metadata,
-        attributes=custom_attributes,
-        impact_score=0.8,
-    )
-
-    assert edge.attributes["strength"] == "strong"
-    assert edge.attributes["reviewed"] is True
-    assert edge.attributes["reviewer"] == "john.doe"
 
 
 def test_node_metadata_timestamp_validation():
@@ -200,46 +136,6 @@ def test_node_metadata_version_validation():
             version=cast(int, 1.5),  # Type error with float
             author="test.author",
             source="test_source",
-        )
-
-
-def test_edge_validation():
-    """Test edge validation."""
-    metadata = EdgeMetadata(
-        created_at=datetime.now(),
-        last_modified=datetime.now(),
-        confidence=0.9,
-        source="test_source",
-    )
-
-    # Test empty source node
-    with pytest.raises(ValueError):
-        Edge(
-            from_entity="",  # Empty source
-            to_entity="node2",
-            relation_type=RelationType.DEPENDS_ON,
-            metadata=metadata,
-            impact_score=0.8,
-        )
-
-    # Test empty target node
-    with pytest.raises(ValueError):
-        Edge(
-            from_entity="node1",
-            to_entity="",  # Empty target
-            relation_type=RelationType.DEPENDS_ON,
-            metadata=metadata,
-            impact_score=0.8,
-        )
-
-    # Test invalid impact score
-    with pytest.raises(ValueError):
-        Edge(
-            from_entity="node1",
-            to_entity="node2",
-            relation_type=RelationType.DEPENDS_ON,
-            metadata=metadata,
-            impact_score=1.5,  # Invalid score
         )
 
 
@@ -343,54 +239,6 @@ def test_node_with_validation_rules(sample_node_metadata):
     assert isinstance(node.validation_rules, list)
     assert len(node.validation_rules) == 3
     assert all(rule in node.validation_rules for rule in validation_rules)
-
-
-def test_edge_metadata_weight_validation():
-    """Test edge metadata weight validation."""
-    now = datetime.now()
-
-    # Test negative weight
-    with pytest.raises(ValueError):
-        EdgeMetadata(
-            created_at=now,
-            last_modified=now,
-            confidence=0.9,
-            source="test_source",
-            weight=-1.0,  # Invalid negative weight
-        )
-
-    # Test non-numeric weight
-    with pytest.raises(TypeError):
-        EdgeMetadata(
-            created_at=now,
-            last_modified=now,
-            confidence=0.9,
-            source="test_source",
-            weight=cast(float, "high"),  # Type error with string
-        )
-
-
-def test_edge_with_boundary_values(sample_edge_metadata):
-    """Test edge creation with boundary values."""
-    # Test minimum valid values
-    edge = Edge(
-        from_entity="node1",
-        to_entity="node2",
-        relation_type=RelationType.DEPENDS_ON,
-        metadata=sample_edge_metadata,
-        impact_score=0.0,  # Minimum valid impact score
-    )
-    assert edge.impact_score == pytest.approx(0.0)
-
-    # Test maximum valid values
-    edge = Edge(
-        from_entity="node1",
-        to_entity="node2",
-        relation_type=RelationType.DEPENDS_ON,
-        metadata=sample_edge_metadata,
-        impact_score=1.0,  # Maximum valid impact score
-    )
-    assert edge.impact_score == pytest.approx(1.0)
 
 
 def test_node_metrics_with_boundary_values():
