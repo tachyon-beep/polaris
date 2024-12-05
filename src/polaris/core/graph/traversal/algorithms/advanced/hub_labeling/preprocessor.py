@@ -5,6 +5,7 @@ This module handles the preprocessing phase of the Hub Labeling algorithm,
 which computes distance labels for each node in the graph.
 """
 
+import math
 import time
 from typing import Dict, List, Optional, Set, TYPE_CHECKING
 from collections import defaultdict
@@ -110,9 +111,11 @@ class HubLabelPreprocessor:
         Returns:
             Map of node to order value (lower = more important)
         """
-        # Detect graph topology
-        is_chain = self._is_chain_graph()
-        is_complete = self._is_complete_graph()
+        # Check if graph is complete
+        if self._is_complete_graph():
+            if verbose:
+                print("\nDetected complete graph, using minimal hub set")
+            return self._compute_complete_graph_order()
 
         # Calculate importance scores
         scores: Dict[str, float] = {}
@@ -123,12 +126,6 @@ class HubLabelPreprocessor:
             print("\nImportance scores:")
             for node, score in sorted(scores.items(), key=lambda x: x[1], reverse=True):
                 print(f"  {node}: {score}")
-
-        # Apply topology-specific adjustments
-        if is_chain:
-            self._adjust_chain_scores(scores)
-        elif is_complete:
-            self._adjust_complete_scores(scores)
 
         # Assign order numbers (0 = most important)
         hub_order = {
@@ -143,156 +140,69 @@ class HubLabelPreprocessor:
 
         return hub_order
 
-    def _is_chain_graph(self) -> bool:
-        """
-        Check if graph is a simple chain.
-
-        A chain graph has exactly two endpoints (degree 1) and all other
-        nodes have exactly two neighbors.
-
-        Returns:
-            True if graph is a chain, False otherwise
-        """
-        # Count degree for each node
-        degree_count = defaultdict(int)
-        for node in self.graph.get_nodes():
-            in_edges = self.graph.get_neighbors(node, reverse=True)
-            out_edges = self.graph.get_neighbors(node)
-            degree = len(in_edges) + len(out_edges)
-            degree_count[degree] += 1
-
-        # Chain has exactly:
-        # - Two endpoints (degree 1)
-        # - All other nodes have degree 2
-        return (
-            len(self.graph.get_nodes()) >= 2
-            and degree_count[1] == 2
-            and degree_count[2] == len(self.graph.get_nodes()) - 2
-            and sum(degree_count.values()) == len(self.graph.get_nodes())
-        )
-
     def _is_complete_graph(self) -> bool:
-        """
-        Check if graph is complete.
+        """Check if graph is complete."""
+        n = len(self.graph.get_nodes())
+        expected_edges = (n * (n - 1)) // 2  # Complete graph has n*(n-1)/2 edges
+        actual_edges = len(set((e.from_entity, e.to_entity) for e in self.graph.get_edges()))
+        return actual_edges >= expected_edges
 
-        A complete graph has edges between every pair of nodes.
-
-        Returns:
-            True if graph is complete, False otherwise
-        """
+    def _compute_complete_graph_order(self) -> Dict[str, int]:
+        """Compute optimized hub order for complete graph."""
         nodes = list(self.graph.get_nodes())
         n = len(nodes)
-        if n <= 1:
-            return True
+        # Select approximately sqrt(n) hubs
+        num_hubs = int(math.sqrt(n))
+        hub_nodes = nodes[:num_hubs]
+        # Assign higher importance to hubs
+        return {node: (0 if node in hub_nodes else 1) for node in nodes}
 
-        # Check each pair of nodes
-        for i in range(n):
-            for j in range(i + 1, n):
-                if not (
-                    self.graph.get_edge(nodes[i], nodes[j])
-                    or self.graph.get_edge(nodes[j], nodes[i])
-                ):
-                    return False
-        return True
-
-    def _adjust_chain_scores(self, scores: Dict[str, float]) -> None:
+    def _compute_forward_labels(self, node: str, hub_order: Dict[str, int], verbose: bool) -> None:
         """
-        Adjust importance scores for chain graph.
-
-        Boosts scores of central nodes to ensure good path coverage.
-
-        Args:
-            scores: Map of node to importance score
-        """
-        # Find endpoints
-        endpoints = [
-            node
-            for node in self.graph.get_nodes()
-            if len(self.graph.get_neighbors(node))
-            + len(self.graph.get_neighbors(node, reverse=True))
-            == 1
-        ]
-        if len(endpoints) != 2:
-            return
-
-        # Find path between endpoints
-        path = []
-        current = endpoints[0]
-        visited = {current}
-        while current != endpoints[1]:
-            neighbors = (
-                self.graph.get_neighbors(current) | self.graph.get_neighbors(current, reverse=True)
-            ) - visited
-            if not neighbors:
-                return
-            current = next(iter(neighbors))
-            visited.add(current)
-            path.append(current)
-
-        # Boost scores based on distance from endpoints
-        n = len(path)
-        for i, node in enumerate(path):
-            # Nodes closer to middle get higher boost
-            dist_from_middle = abs(i - n // 2)
-            boost = 1.0 / (dist_from_middle + 1)
-            scores[node] = scores[node] * (1 + boost)
-
-    def _adjust_complete_scores(self, scores: Dict[str, float]) -> None:
-        """
-        Adjust importance scores for complete graph.
-
-        Ensures minimal hub set while maintaining path coverage.
-
-        Args:
-            scores: Map of node to importance score
-        """
-        n = len(self.graph.get_nodes())
-        if n <= 2:
-            return
-
-        # For complete graphs, we only need O(sqrt(n)) hubs
-        # Boost top sqrt(n) nodes to ensure they become hubs
-        top_k = int((n**0.5) + 0.5)  # Round up
-        top_nodes = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)[:top_k]
-
-        for node in top_nodes:
-            scores[node] *= 2.0  # Double importance of potential hubs
-
-    def _compute_forward_labels(
-        self,
-        node: str,
-        hub_order: Dict[str, int],
-        verbose: bool,
-    ) -> None:
-        """
-        Compute forward labels for a node.
-
-        These labels represent shortest paths from this node to more
-        important hubs.
+        Compute forward labels with aggressive pruning.
 
         Args:
             node: Node to compute labels for
             hub_order: Map of node to order value
             verbose: Whether to print progress information
         """
-        # Get existing labels
         forward_labels = self.state.get_forward_labels(node)
 
-        # Try paths through existing hubs
-        for hub in hub_order:
-            if hub_order[hub] >= hub_order[node]:
-                continue  # Only consider more important hubs
+        # Track processed hubs to avoid duplicates
+        processed_hubs = set()
 
-            # Check direct edge
+        # Process in hub order (most important first)
+        for hub in sorted(hub_order.keys(), key=lambda x: hub_order[x]):
+            if hub_order[hub] >= hub_order[node]:
+                continue
+
+            if hub in processed_hubs:
+                continue
+
+            # Check if we need label to this hub
+            min_dist_through_others = float("inf")
+            for other_hub in processed_hubs:
+                dist_to_other = forward_labels.get_distance(other_hub)
+                if dist_to_other is not None:
+                    other_to_hub = self.state.get_backward_labels(hub).get_distance(other_hub)
+                    if other_to_hub is not None:
+                        min_dist_through_others = min(
+                            min_dist_through_others, dist_to_other + other_to_hub
+                        )
+
+            # If we can reach through more important hubs, skip this one
+            if min_dist_through_others < float("inf"):
+                continue
+
+            # Try direct edge
             edge = self.graph.get_edge(node, hub)
             if edge:
                 distance = get_edge_weight(edge)
-                if not should_prune_label(node, hub, distance, self.state):
-                    if verbose:
-                        print(f"    Adding forward label: {node} -> {hub} (dist={distance})")
-                    forward_labels.add_label(HubLabel(hub=hub, distance=distance, first_hop=edge))
+                forward_labels.add_label(HubLabel(hub=hub, distance=distance, first_hop=edge))
+                processed_hubs.add(hub)
+                continue
 
-            # Check paths through neighbors
+            # Try through neighbors
             for neighbor in self.graph.get_neighbors(node):
                 neighbor_labels = self.state.get_forward_labels(neighbor)
                 neighbor_edge = self.graph.get_edge(node, neighbor)
@@ -300,14 +210,13 @@ class HubLabelPreprocessor:
                     for label in neighbor_labels.labels:
                         if hub_order[label.hub] < hub_order[hub]:
                             total_dist = get_edge_weight(neighbor_edge) + label.distance
-                            if not should_prune_label(node, hub, total_dist, self.state):
-                                if verbose:
-                                    print(
-                                        f"    Adding forward label: {node} -> {hub} (dist={total_dist})"
-                                    )
+                            # Only add if no better path exists
+                            existing = forward_labels.get_distance(hub)
+                            if existing is None or total_dist < existing:
                                 forward_labels.add_label(
                                     HubLabel(hub=hub, distance=total_dist, first_hop=neighbor_edge)
                                 )
+                                processed_hubs.add(hub)
 
     def _compute_backward_labels(
         self,

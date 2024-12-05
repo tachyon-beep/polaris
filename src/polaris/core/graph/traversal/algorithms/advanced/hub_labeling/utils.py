@@ -29,6 +29,180 @@ class GraphLike(Protocol):
     def get_edge(self, from_node: str, to_node: str) -> Optional[Edge]: ...
 
 
+def validate_path_through_hub(source: str, target: str, hub: str, graph: GraphLike) -> bool:
+    """
+    Verify path exists through hub.
+
+    Args:
+        source: Source node
+        target: Target node
+        hub: Hub node to validate path through
+        graph: Graph instance
+
+    Returns:
+        True if valid path exists through hub, False otherwise
+    """
+    # Check forward path exists
+    current = source
+    visited = {current}
+    while current != hub:
+        found_next = False
+        for neighbor in graph.get_neighbors(current):
+            if neighbor not in visited and (neighbor == hub or graph.get_edge(neighbor, hub)):
+                current = neighbor
+                visited.add(current)
+                found_next = True
+                break
+        if not found_next:
+            return False
+
+    # Check backward path exists
+    current = target
+    visited = {current}
+    while current != hub:
+        found_next = False
+        for neighbor in graph.get_neighbors(current, reverse=True):
+            if neighbor not in visited and (neighbor == hub or graph.get_edge(hub, neighbor)):
+                current = neighbor
+                visited.add(current)
+                found_next = True
+                break
+        if not found_next:
+            return False
+
+    return True
+
+
+def build_forward_path(source: str, hub: str, state: HubLabelState, graph: GraphLike) -> List[Edge]:
+    """Build path from source to hub."""
+    path = []
+    current = source
+    visited = {current}
+
+    while current != hub:
+        next_label = state.get_forward_labels(current).get_label(hub)
+        if next_label is None:
+            return []
+
+        if next_label.first_hop is not None:
+            next_node = next_label.first_hop.to_entity
+            if next_node in visited:  # Cycle detection
+                return []
+            path.append(next_label.first_hop)
+            current = next_node
+            visited.add(current)
+        else:
+            # Try direct edge
+            direct_edge = graph.get_edge(current, hub)
+            if direct_edge is None:
+                return []
+            path.append(direct_edge)
+            break
+
+    return path
+
+
+def build_backward_path(
+    hub: str, target: str, state: HubLabelState, graph: GraphLike
+) -> List[Edge]:
+    """Build path from hub to target."""
+    path = []
+    current = target
+    visited = {current}
+
+    while current != hub:
+        next_label = state.get_backward_labels(current).get_label(hub)
+        if next_label is None:
+            return []
+
+        if next_label.first_hop is not None:
+            next_node = next_label.first_hop.from_entity
+            if next_node in visited:  # Cycle detection
+                return []
+            path.append(next_label.first_hop)
+            current = next_node
+            visited.add(current)
+        else:
+            # Try direct edge
+            direct_edge = graph.get_edge(hub, current)
+            if direct_edge is None:
+                return []
+            path.append(direct_edge)
+            break
+
+    return list(reversed(path))
+
+
+def reconstruct_path(
+    source: str,
+    target: str,
+    state: HubLabelState,
+    graph: GraphLike,
+) -> List[Edge]:
+    """
+    Enhanced path reconstruction with better validation.
+
+    Args:
+        source: Source node
+        target: Target node
+        state: Algorithm state
+        graph: Graph instance
+
+    Returns:
+        List of edges forming shortest path
+    """
+    # First find best hub and distances
+    min_dist = float("inf")
+    best_hub = None
+    best_forward_label = None
+    best_backward_label = None
+
+    forward_labels = state.get_forward_labels(source)
+    backward_labels = state.get_backward_labels(target)
+
+    # Try direct path first
+    direct_edge = graph.get_edge(source, target)
+    if direct_edge:
+        return [direct_edge]
+
+    # Find best hub with validated paths
+    for forward_label in forward_labels.labels:
+        backward_label = backward_labels.get_label(forward_label.hub)
+        if backward_label:
+            total_dist = forward_label.distance + backward_label.distance
+            if total_dist < min_dist:
+                # Validate path exists through this hub
+                if validate_path_through_hub(source, target, forward_label.hub, graph):
+                    min_dist = total_dist
+                    best_hub = forward_label.hub
+                    best_forward_label = forward_label
+                    best_backward_label = backward_label
+
+    if not best_hub:
+        return []
+
+    # Build path through best hub
+    forward_path = build_forward_path(source, best_hub, state, graph)
+    backward_path = build_backward_path(best_hub, target, state, graph)
+
+    if not forward_path or not backward_path:
+        return []
+
+    path = forward_path + backward_path
+
+    # Validate total path weight matches computed distance
+    total_weight = sum(get_edge_weight(edge) for edge in path)
+    if abs(total_weight - min_dist) > 1e-10:  # Account for floating point error
+        return []
+
+    # Cache valid path
+    cache_key = PathCache.get_cache_key(source, target, "hub_label_path")
+    result = PathResult(path=path, total_weight=total_weight)
+    PathCache.put(cache_key, result)
+
+    return path
+
+
 def _compute_reachability_metrics(node: str, graph: GraphLike) -> Tuple[int, int, float]:
     """
     Compute reachability metrics for a node using BFS.
@@ -220,190 +394,3 @@ def compute_distance(
         PathCache.put(cache_key, result)
         return min_dist
     return None
-
-
-def find_best_hub(
-    source: str,
-    target: str,
-    state: HubLabelState,
-    graph: GraphLike,
-) -> Tuple[Optional[str], Optional[HubLabel], Optional[HubLabel]]:
-    """
-    Find the best hub for path reconstruction.
-
-    Args:
-        source: Source node
-        target: Target node
-        state: Algorithm state
-        graph: Graph instance
-
-    Returns:
-        Tuple of (best hub, forward label, backward label) or (None, None, None) if no valid hub found
-    """
-    forward_labels = state.get_forward_labels(source)
-    backward_labels = state.get_backward_labels(target)
-    best_dist = float("inf")
-    best_hub = None
-    best_forward_label = None
-    best_backward_label = None
-
-    # Try all possible hubs
-    for forward_label in forward_labels.labels:
-        backward_label = backward_labels.get_label(forward_label.hub)
-        if backward_label is not None:
-            total_dist = forward_label.distance + backward_label.distance
-            if total_dist < best_dist:
-                # Check if paths exist in both directions
-                forward_path_exists = False
-                backward_path_exists = False
-
-                # Check forward path
-                if forward_label.first_hop is not None:
-                    forward_path_exists = True
-                elif forward_label.hub == source:
-                    forward_path_exists = True
-                elif graph.get_edge(source, forward_label.hub) is not None:
-                    forward_path_exists = True
-
-                # Check backward path
-                if backward_label.first_hop is not None:
-                    backward_path_exists = True
-                elif backward_label.hub == target:
-                    backward_path_exists = True
-                elif graph.get_edge(backward_label.hub, target) is not None:
-                    backward_path_exists = True
-
-                if forward_path_exists and backward_path_exists:
-                    best_dist = total_dist
-                    best_hub = forward_label.hub
-                    best_forward_label = forward_label
-                    best_backward_label = backward_label
-
-    return best_hub, best_forward_label, best_backward_label
-
-
-def reconstruct_path(
-    source: str,
-    target: str,
-    state: HubLabelState,
-    graph: GraphLike,
-) -> List[Edge]:
-    """
-    Reconstruct shortest path using hub labels.
-
-    Args:
-        source: Source node
-        target: Target node
-        state: Algorithm state
-        graph: Graph instance
-
-    Returns:
-        List of edges forming shortest path
-    """
-    # Check cache first
-    cache_key = PathCache.get_cache_key(source, target, "hub_label_path")
-    if cached_result := PathCache.get(cache_key):
-        return cached_result.path
-
-    metrics = PerformanceMetrics(operation="hub_label_path_reconstruction", start_time=time.time())
-
-    # Get shortest path distance through hubs
-    hub_dist = compute_distance(source, target, state)
-    if hub_dist is None:
-        return []
-
-    # Check if direct edge is shortest path
-    direct_edge = graph.get_edge(source, target)
-    if direct_edge:
-        direct_dist = get_edge_weight(direct_edge)
-        if abs(direct_dist - hub_dist) < 1e-10:  # Account for floating point error
-            return [direct_edge]
-
-    # Find best hub with valid path
-    best_hub, forward_label, backward_label = find_best_hub(source, target, state, graph)
-    if best_hub is None:
-        return []
-
-    # Build path through best hub
-    path = []
-    visited = set()  # Track visited nodes for cycle detection
-
-    # Forward path to hub
-    if source != best_hub:
-        current = source
-        visited.add(current)
-
-        while current != best_hub:
-            next_label = state.get_forward_labels(current).get_label(best_hub)
-            if next_label is None:
-                return []
-
-            # Try using first_hop if available
-            if next_label.first_hop is not None:
-                next_node = next_label.first_hop.to_entity
-                if next_node in visited:  # Cycle detection
-                    return []
-                path.append(next_label.first_hop)
-                current = next_node
-                visited.add(current)
-            else:
-                # Try direct edge
-                direct_edge = graph.get_edge(current, best_hub)
-                if direct_edge is None:
-                    return []
-                path.append(direct_edge)
-                break
-
-    # Backward path from hub to target
-    if target != best_hub:
-        backward_path = []
-        current = target
-        visited.add(current)
-
-        while current != best_hub:
-            next_label = state.get_backward_labels(current).get_label(best_hub)
-            if next_label is None:
-                return []
-
-            # Try using first_hop if available
-            if next_label.first_hop is not None:
-                next_node = next_label.first_hop.from_entity
-                if next_node in visited:  # Cycle detection
-                    return []
-                backward_path.append(next_label.first_hop)
-                current = next_node
-                visited.add(current)
-            else:
-                # Try direct edge
-                direct_edge = graph.get_edge(best_hub, current)
-                if direct_edge is None:
-                    return []
-                backward_path.append(direct_edge)
-                break
-
-        # Combine paths
-        path.extend(reversed(backward_path))
-
-    # Validate path
-    if not path:
-        return []
-
-    # Check path connectivity
-    for i in range(len(path) - 1):
-        if path[i].to_entity != path[i + 1].from_entity:
-            return []  # Path is not connected
-
-    # Validate total path weight matches computed distance
-    total_weight = sum(get_edge_weight(edge) for edge in path)
-    if abs(total_weight - hub_dist) > 1e-10:  # Account for floating point error
-        return []  # Path weight doesn't match expected distance
-
-    # Create and validate path result
-    metrics.path_length = len(path)
-    metrics.end_time = time.time()
-
-    if path:  # Only cache valid paths
-        result = PathResult(path=path, total_weight=total_weight)
-        PathCache.put(cache_key, result)
-
-    return path

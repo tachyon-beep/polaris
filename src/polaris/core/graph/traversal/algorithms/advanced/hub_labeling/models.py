@@ -40,27 +40,28 @@ class HubLabelSet:
 
     def add_label(self, label: HubLabel) -> None:
         """
-        Add a new label to the set.
+        Add label, keeping only shortest distance for each hub.
 
         Args:
             label: Label to add
         """
-        # Get existing labels for this hub
-        existing = self._hub_to_labels.get(label.hub, [])
+        # Check if we already have a label for this hub
+        existing = None
+        for idx, existing_label in enumerate(self.labels):
+            if existing_label.hub == label.hub:
+                existing = (idx, existing_label)
+                break
 
-        # Check if we already have a better path
-        for existing_label in existing:
-            if existing_label.distance <= label.distance:
-                return  # Skip if we have a better or equal path
-
-        # Add new label
-        self.labels.append(label)
-        if label.hub not in self._hub_to_labels:
-            self._hub_to_labels[label.hub] = []
-        self._hub_to_labels[label.hub].append(label)
-
-        # Sort labels by distance
-        self._hub_to_labels[label.hub].sort(key=lambda x: x.distance)
+        if existing:
+            idx, existing_label = existing
+            # Only replace if new label has shorter distance
+            if label.distance < existing_label.distance:
+                self.labels[idx] = label
+                # Update hub_to_labels mapping
+                self._hub_to_labels[label.hub] = [label]
+        else:
+            self.labels.append(label)
+            self._hub_to_labels[label.hub] = [label]
 
     def get_label(self, hub: str) -> Optional[HubLabel]:
         """
