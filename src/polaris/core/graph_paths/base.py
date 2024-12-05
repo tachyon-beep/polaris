@@ -9,7 +9,7 @@ from polaris.core.graph_paths.models import PathResult
 T = TypeVar("T", bound=PathResult)
 
 
-class PathFinder(Generic[T], ABC):
+class PathFinder[T](ABC):
     """Abstract base class for path finding algorithms."""
 
     def __init__(self, graph: Any):
