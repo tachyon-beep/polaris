@@ -19,8 +19,8 @@ Example:
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Union, Any
 
-from ..graph import Graph
-from ..models import Edge
+from polaris.core.graph import Graph
+from polaris.core.models import Edge
 
 
 class PathValidationError(Exception):

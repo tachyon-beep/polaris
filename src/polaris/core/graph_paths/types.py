@@ -4,7 +4,7 @@ from enum import Enum
 from typing import Callable, List, Optional, Union
 from functools import wraps
 
-from ..models import Edge
+from polaris.core.models import Edge
 
 
 class PathType(Enum):

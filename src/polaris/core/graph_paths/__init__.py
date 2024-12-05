@@ -3,7 +3,7 @@
 from typing import List, Optional, Union, Type, Any, Iterator
 from itertools import islice
 
-from ..exceptions import GraphOperationError
+from polaris.core.exceptions import GraphOperationError
 from .algorithms.shortest_path import ShortestPathFinder
 from .algorithms.bidirectional import BidirectionalFinder
 from .algorithms.all_paths import AllPathsFinder
@@ -251,7 +251,7 @@ class PathFinding:
         filter_func: Optional[PathFilter] = None,
         weight_func: Optional[WeightFunc] = None,
         **kwargs,
-    ) -> Union[PathResult, Iterator[PathResult]]:
+    ) -> PathResult | Iterator[PathResult]:
         """Generic path finding interface."""
         # Validate max_length before proceeding
         cls._validate_length(max_length)

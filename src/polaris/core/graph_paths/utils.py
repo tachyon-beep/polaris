@@ -14,10 +14,10 @@ from typing import Dict, List, Optional, Set, Tuple, Callable, Generator, Any
 from heapq import heappush, heappop
 from functools import wraps
 
-from ..graph import Graph
-from ..models import Edge
-from .models import PathResult, PathValidationError
-from .types import WeightFunc, allow_negative_weights
+from polaris.core.graph import Graph
+from polaris.core.models import Edge
+from polaris.core.graph_paths.models import PathResult, PathValidationError
+from polaris.core.graph_paths.types import WeightFunc, allow_negative_weights
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 # Constants
 EPSILON = 1e-10  # Floating point comparison tolerance
 MAX_QUEUE_SIZE = 100000  # Maximum size for priority queues
+PATH_COST_EXCEEDED_MSG = "Path cost exceeded maximum value"
 
 
 def get_edge_weight(edge: Edge, weight_func: Optional[WeightFunc] = None) -> float:
@@ -167,16 +168,16 @@ def validate_path(
                         f"Invalid weight type for edge {edge.from_entity}->{edge.to_entity}"
                     )
                 if math.isnan(weight) or math.isinf(weight):
-                    raise PathValidationError("Path cost exceeded maximum value")
+                    raise PathValidationError(PATH_COST_EXCEEDED_MSG)
                 if weight == 0:
                     raise PathValidationError("Edge weight must be non-zero")
                 new_total = total_weight + weight
                 if math.isinf(new_total) or math.isnan(new_total):
-                    raise PathValidationError("Path cost exceeded maximum value")
+                    raise PathValidationError(PATH_COST_EXCEEDED_MSG)
                 total_weight = new_total
         except Exception as e:
             if "Edge weight must be finite number" in str(e):
-                raise PathValidationError("Path cost exceeded maximum value")
+                raise PathValidationError(PATH_COST_EXCEEDED_MSG)
             raise PathValidationError(f"Weight calculation error: {str(e)}")
 
 

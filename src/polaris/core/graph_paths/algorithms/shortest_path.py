@@ -5,13 +5,13 @@ import logging
 from typing import Dict, List, Optional, Set, Tuple, Any
 from contextlib import contextmanager
 
-from ...exceptions import GraphOperationError, NodeNotFoundError
-from ...models import Edge
-from ..base import PathFinder
-from ..cache import PathCache
-from ..models import PathResult, PathValidationError, PerformanceMetrics
-from ..types import WeightFunc, PathFilter
-from ..utils import (
+from polaris.core.exceptions import GraphOperationError, NodeNotFoundError
+from polaris.core.models import Edge
+from polaris.core.graph_paths.base import PathFinder
+from polaris.core.graph_paths.cache import PathCache
+from polaris.core.graph_paths.models import PathResult, PathValidationError, PerformanceMetrics
+from polaris.core.graph_paths.types import WeightFunc, PathFilter
+from polaris.core.graph_paths.utils import (
     PriorityQueue,
     MemoryManager,
     PathState,
@@ -119,7 +119,7 @@ class ShortestPathFinder(PathFinder[PathResult]):
         # Track shortest path length found
         min_path_length = float("inf")
 
-        for i in range(n - 1):
+        for _ in range(n - 1):
             self.memory_manager.check_memory()
             nodes_explored += len(nodes)
             relaxed = False
