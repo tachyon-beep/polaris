@@ -7,6 +7,7 @@ to store and manage distance labels.
 
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set
+import math
 
 from polaris.core.models import Edge
 
@@ -24,6 +25,19 @@ class HubLabel:
     distance: float
     first_hop: Optional[Edge]
 
+    def __post_init__(self):
+        """Validate label attributes."""
+        if not isinstance(self.distance, (int, float)):
+            raise ValueError("Distance must be numeric")
+        if self.distance < 0:
+            raise ValueError("Distance cannot be negative")
+        if math.isinf(self.distance):
+            raise ValueError("Distance cannot be infinite")
+        if not isinstance(self.hub, str):
+            raise ValueError("Hub must be a string")
+        if not self.hub:
+            raise ValueError("Hub cannot be empty")
+
 
 class HubLabelSet:
     """
@@ -37,35 +51,40 @@ class HubLabelSet:
         """Initialize empty label set."""
         self.labels: List[HubLabel] = []
         self._hub_to_labels: Dict[str, List[HubLabel]] = {}
+        self._hub_to_index: Dict[str, int] = {}  # For O(1) lookups
 
     def add_label(self, label: HubLabel) -> None:
         """
         Add label, keeping only shortest distance for each hub.
+        Ensures atomic updates and proper deduplication.
 
         Args:
             label: Label to add
         """
-        # Check if we already have a label for this hub
-        existing = None
-        for idx, existing_label in enumerate(self.labels):
-            if existing_label.hub == label.hub:
-                existing = (idx, existing_label)
-                break
+        # Validate label
+        if not isinstance(label, HubLabel):
+            raise ValueError("Label must be a HubLabel instance")
 
-        if existing:
-            idx, existing_label = existing
+        # Get existing index if any
+        existing_idx = self._hub_to_index.get(label.hub)
+
+        if existing_idx is not None:
+            existing_label = self.labels[existing_idx]
             # Only replace if new label has shorter distance
             if label.distance < existing_label.distance:
-                self.labels[idx] = label
-                # Update hub_to_labels mapping
+                # Atomic update
+                self.labels[existing_idx] = label
                 self._hub_to_labels[label.hub] = [label]
         else:
+            # Add new label
             self.labels.append(label)
+            self._hub_to_index[label.hub] = len(self.labels) - 1
             self._hub_to_labels[label.hub] = [label]
 
     def get_label(self, hub: str) -> Optional[HubLabel]:
         """
         Get label for a specific hub.
+        O(1) lookup using index mapping.
 
         Args:
             hub: Hub node to get label for
@@ -73,12 +92,15 @@ class HubLabelSet:
         Returns:
             Label if it exists, None otherwise
         """
-        labels = self._hub_to_labels.get(hub, [])
-        return labels[0] if labels else None
+        idx = self._hub_to_index.get(hub)
+        if idx is not None:
+            return self.labels[idx]
+        return None
 
     def get_distance(self, hub: str) -> Optional[float]:
         """
         Get distance to a specific hub.
+        O(1) lookup using index mapping.
 
         Args:
             hub: Hub node to get distance to
@@ -88,6 +110,25 @@ class HubLabelSet:
         """
         label = self.get_label(hub)
         return label.distance if label else None
+
+    def remove_label(self, hub: str) -> None:
+        """
+        Remove label for a specific hub.
+        Ensures atomic updates across all data structures.
+
+        Args:
+            hub: Hub to remove label for
+        """
+        idx = self._hub_to_index.get(hub)
+        if idx is not None:
+            # Remove from all data structures atomically
+            self.labels.pop(idx)
+            del self._hub_to_labels[hub]
+            del self._hub_to_index[hub]
+            # Update indices for remaining labels
+            for h, i in self._hub_to_index.items():
+                if i > idx:
+                    self._hub_to_index[h] = i - 1
 
 
 class HubLabelState:
@@ -154,6 +195,10 @@ class HubLabelState:
             node: Node to set order for
             order: Order value (lower = more important)
         """
+        if not isinstance(order, int):
+            raise ValueError("Order must be an integer")
+        if order < 0:
+            raise ValueError("Order cannot be negative")
         self._hub_order[node] = order
 
     def get_nodes(self) -> Set[str]:
@@ -164,3 +209,18 @@ class HubLabelState:
             Set of node IDs
         """
         return set(self._forward_labels.keys())
+
+    def validate_state(self) -> None:
+        """
+        Validate internal state consistency.
+        Raises ValueError if state is invalid.
+        """
+        for node, label_set in self._forward_labels.items():
+            for label in label_set.labels:
+                if label.hub not in self._hub_order:
+                    raise ValueError(f"Hub {label.hub} missing from ordering")
+
+        for node, label_set in self._backward_labels.items():
+            for label in label_set.labels:
+                if label.hub not in self._hub_order:
+                    raise ValueError(f"Hub {label.hub} missing from ordering")
