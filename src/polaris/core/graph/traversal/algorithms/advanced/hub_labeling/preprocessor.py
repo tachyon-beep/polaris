@@ -112,7 +112,12 @@ class HubLabelPreprocessor:
         # Calculate importance scores
         scores: Dict[str, float] = {}
         for node in self.graph.get_nodes():
-            scores[node] = calculate_node_importance(node, self.graph, {})
+            # Add degree penalty to reduce label count
+            base_score = calculate_node_importance(node, self.graph, {})
+            in_degree = len(self.graph.get_neighbors(node, reverse=True))
+            out_degree = len(self.graph.get_neighbors(node))
+            degree_penalty = (in_degree + out_degree) * 0.1
+            scores[node] = base_score - degree_penalty
 
         if verbose:
             print("\nImportance scores:")
@@ -240,7 +245,7 @@ class HubLabelPreprocessor:
 
         # Try paths through existing hubs
         for source in hub_order:
-            if hub_order[source] <= hub_order[node]:
+            if hub_order[source] >= hub_order[node]:
                 continue  # Only consider less important nodes
 
             # Check direct edge

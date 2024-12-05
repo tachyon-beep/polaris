@@ -103,7 +103,7 @@ def should_prune_label(
     Returns:
         True if label can be pruned, False otherwise
     """
-    # Never prune self labels
+    # Never prune self labels or direct edges
     if source == hub:
         return False
 
@@ -121,10 +121,10 @@ def should_prune_label(
             if hub_to_target is not None:
                 min_dist = min(min_dist, label.distance + hub_to_target)
 
-    # For chain graphs, be less aggressive about pruning
-    # to maintain connectivity for long paths
+    # Be less aggressive about pruning to maintain connectivity
     if min_dist < float("inf"):
-        return min_dist < distance  # Only prune if strictly better path exists
+        # Only prune if significantly better path exists
+        return min_dist < distance * 0.9  # Allow some slack for path diversity
     return False
 
 
@@ -192,24 +192,34 @@ def find_best_hub(
     best_forward_label = None
     best_backward_label = None
 
+    # Try all possible hubs
     for forward_label in forward_labels.labels:
         backward_label = backward_labels.get_label(forward_label.hub)
         if backward_label is not None:
-            dist = forward_label.distance + backward_label.distance
-            if dist < best_dist:
-                # Check if we can reconstruct the path through this hub
-                can_reach_hub = (
-                    forward_label.first_hop is not None
-                    or forward_label.hub == source
-                    or graph.get_edge(source, forward_label.hub) is not None
-                )
-                can_reach_target = (
-                    backward_label.first_hop is not None
-                    or backward_label.hub == target
-                    or graph.get_edge(backward_label.hub, target) is not None
-                )
-                if can_reach_hub and can_reach_target:
-                    best_dist = dist
+            total_dist = forward_label.distance + backward_label.distance
+            if total_dist < best_dist:
+                # Check if paths exist in both directions
+                forward_path_exists = False
+                backward_path_exists = False
+
+                # Check forward path
+                if forward_label.first_hop is not None:
+                    forward_path_exists = True
+                elif forward_label.hub == source:
+                    forward_path_exists = True
+                elif graph.get_edge(source, forward_label.hub) is not None:
+                    forward_path_exists = True
+
+                # Check backward path
+                if backward_label.first_hop is not None:
+                    backward_path_exists = True
+                elif backward_label.hub == target:
+                    backward_path_exists = True
+                elif graph.get_edge(backward_label.hub, target) is not None:
+                    backward_path_exists = True
+
+                if forward_path_exists and backward_path_exists:
+                    best_dist = total_dist
                     best_hub = forward_label.hub
                     best_forward_label = forward_label
                     best_backward_label = backward_label
@@ -261,56 +271,72 @@ def reconstruct_path(
 
     # Build path through best hub
     path = []
+    visited = set()  # Track visited nodes for cycle detection
 
     # Forward path to hub
     if source != best_hub:
-        if forward_label and forward_label.first_hop:
-            # Follow first_hop edges to hub
-            current = source
-            visited = {current}  # Prevent cycles
-            while current != best_hub:
-                next_label = state.get_forward_labels(current).get_label(best_hub)
-                if next_label is None or next_label.first_hop is None:
-                    return []
+        current = source
+        visited.add(current)
+
+        while current != best_hub:
+            next_label = state.get_forward_labels(current).get_label(best_hub)
+            if next_label is None:
+                return []
+
+            # Try using first_hop if available
+            if next_label.first_hop is not None:
                 next_node = next_label.first_hop.to_entity
                 if next_node in visited:  # Cycle detection
                     return []
                 path.append(next_label.first_hop)
                 current = next_node
                 visited.add(current)
-        else:
-            # Direct edge to hub
-            direct_edge = graph.get_edge(source, best_hub)
-            if direct_edge is None:
-                return []
-            path.append(direct_edge)
+            else:
+                # Try direct edge
+                direct_edge = graph.get_edge(current, best_hub)
+                if direct_edge is None:
+                    return []
+                path.append(direct_edge)
+                break
 
-    # Backward path from target to hub
+    # Backward path from hub to target
     if target != best_hub:
         backward_path = []
-        if backward_label and backward_label.first_hop:
-            # Follow first_hop edges to hub
-            current = target
-            visited = {current}  # Prevent cycles
-            while current != best_hub:
-                next_label = state.get_backward_labels(current).get_label(best_hub)
-                if next_label is None or next_label.first_hop is None:
-                    return []
+        current = target
+        visited.add(current)
+
+        while current != best_hub:
+            next_label = state.get_backward_labels(current).get_label(best_hub)
+            if next_label is None:
+                return []
+
+            # Try using first_hop if available
+            if next_label.first_hop is not None:
                 next_node = next_label.first_hop.from_entity
                 if next_node in visited:  # Cycle detection
                     return []
                 backward_path.append(next_label.first_hop)
                 current = next_node
                 visited.add(current)
-        else:
-            # Direct edge from hub
-            direct_edge = graph.get_edge(best_hub, target)
-            if direct_edge is None:
-                return []
-            backward_path.append(direct_edge)
+            else:
+                # Try direct edge
+                direct_edge = graph.get_edge(best_hub, current)
+                if direct_edge is None:
+                    return []
+                backward_path.append(direct_edge)
+                break
 
         # Combine paths
         path.extend(reversed(backward_path))
+
+    # Validate path
+    if not path:
+        return []
+
+    # Check path connectivity
+    for i in range(len(path) - 1):
+        if path[i].to_entity != path[i + 1].from_entity:
+            return []  # Path is not connected
 
     # Validate total path weight matches computed distance
     total_weight = sum(get_edge_weight(edge) for edge in path)
