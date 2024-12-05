@@ -14,9 +14,9 @@ from heapq import heappop, heappush
 from typing import Callable, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
 from polaris.core.exceptions import GraphOperationError
-from polaris.core.graph_paths.base import PathFinder
-from polaris.core.graph_paths.models import PathResult
-from polaris.core.graph_paths.utils import (
+from ...base import PathFinder
+from ...path_models import PathResult
+from ...utils import (
     MemoryManager,
     WeightFunc,
     create_path_result,

@@ -64,8 +64,5 @@ WeightFunc = Callable[[Edge], float]
 # Type alias for path filter functions
 PathFilter = Callable[[List[Edge]], bool]
 
-# Type alias for path result
-PathResult = Union[List[Edge], None]
-
 # Type alias for path length
 PathLength = Optional[int]

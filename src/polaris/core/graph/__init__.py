@@ -21,10 +21,17 @@ from .events import (
     GraphEventDispatcher,
     GraphEventDetails,
 )
+from .traversal import (
+    PathFinder,
+    PerformanceMetrics,
+    AllPathsFinder,
+    BidirectionalFinder,
+    ShortestPathFinder,
+    PathResult,
+)
 from ..models.edge import Edge
 from ..exceptions import EdgeNotFoundError, NodeNotFoundError
-from ..graph_paths import PathFinding, PathType, PathResult
-from ..graph_paths.cache import PathCache
+from .traversal.cache import PathCache
 
 
 class Graph:
@@ -53,6 +60,7 @@ class Graph:
         self.state_manager = GraphStateManager(self._base_graph)
         self.event_manager = GraphEventManager()
         self.event_dispatcher = GraphEventDispatcher(self.event_manager)
+        PathCache.reconfigure(max_size=cache_size, ttl=cache_ttl)
 
     @property
     def adjacency(self) -> Dict[str, Dict[str, Edge]]:
@@ -160,24 +168,27 @@ class Graph:
         from_node: str,
         to_node: str,
         max_depth: Optional[int] = None,
-        path_type: PathType = PathType.SHORTEST,
+        algorithm: Type[
+            AllPathsFinder | BidirectionalFinder | ShortestPathFinder
+        ] = ShortestPathFinder,
         **kwargs,
-    ) -> PathResult | Iterator[PathResult]:
+    ) -> Union[PathResult, Iterator[PathResult]]:
         """
-        Find paths between nodes using the graph_paths module.
+        Find paths between nodes using the specified algorithm.
 
         Args:
             from_node (str): Starting node
             to_node (str): Target node
             max_depth (Optional[int]): Maximum path length
-            path_type (PathType): Type of path finding to use
+            algorithm: Path finding algorithm to use
             **kwargs: Additional arguments passed to path finder
 
         Returns:
             Union[PathResult, Iterator[PathResult]]: Found path(s)
         """
-        return PathFinding.find_paths(
-            self, from_node, to_node, path_type=path_type, max_length=max_depth, **kwargs
+        finder = algorithm(self)
+        return finder.find_paths(
+            start_node=from_node, end_node=to_node, max_length=max_depth, **kwargs
         )
 
     def clear(self) -> None:
@@ -201,4 +212,10 @@ __all__ = [
     "GraphStateView",
     "EdgeNotFoundError",
     "NodeNotFoundError",
+    "PathFinder",
+    "PathResult",
+    "PerformanceMetrics",
+    "AllPathsFinder",
+    "BidirectionalFinder",
+    "ShortestPathFinder",
 ]

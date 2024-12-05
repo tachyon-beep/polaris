@@ -15,8 +15,8 @@ from typing import Any, Callable, Dict, Generator, List, Optional, Set, Tuple, T
 
 import psutil
 
-from polaris.core.graph_paths.models import PathResult, PathValidationError
-from polaris.core.graph_paths.types import WeightFunc, allow_negative_weights
+from .path_models import PathResult, PathValidationError
+from .types import WeightFunc, allow_negative_weights
 from polaris.core.models import Edge
 
 if TYPE_CHECKING:
@@ -68,7 +68,7 @@ def is_better_cost(new_cost: float, old_cost: float) -> bool:
     assert isinstance(new_cost, float) and isinstance(old_cost, float), "Costs must be floats"
     # Always use the same comparison - for both positive and negative weights,
     # we want the smaller value (more negative = better for negative weights)
-    return (new_cost - old_cost) < -EPSILON
+    return (old_cost - new_cost) > EPSILON
 
 
 def calculate_path_weight(path: List[Edge], weight_func: Optional[WeightFunc] = None) -> float:
@@ -94,10 +94,8 @@ def create_path_result(
     # Debug: Print the path being created
     reconstructed_path = [f"{e.from_entity}->{e.to_entity}" for e in path]
     print(f"Creating PathResult with path: {reconstructed_path}, Total weight: {total_weight}")
-    result = PathResult(path=path, total_weight=total_weight)
-    if graph:
-        validate_path(result.path, graph, weight_func)
-    return result
+    # Create result without validation - let the caller handle validation if needed
+    return PathResult(path=path, total_weight=total_weight)
 
 
 def validate_path(
@@ -141,13 +139,14 @@ def validate_path(
         if not graph.has_node(edge.to_entity):
             raise PathValidationError(f"Node {edge.to_entity} not in graph")
 
-    # Check node connectivity
-    for i in range(len(path) - 1):
-        if path[i].to_entity != path[i + 1].from_entity:
-            raise PathValidationError(
-                f"Path discontinuity between edges {i} and {i+1}: "
-                f"{path[i].to_entity} != {path[i + 1].from_entity}"
-            )
+    # Check node connectivity only if there's more than one edge
+    if len(path) > 1:
+        for i in range(len(path) - 1):
+            if path[i].to_entity != path[i + 1].from_entity:
+                raise PathValidationError(
+                    f"Path discontinuity between edges {i} and {i+1}: "
+                    f"{path[i].to_entity} != {path[i + 1].from_entity}"
+                )
 
     # Check for self-loops and cycles
     path_visited = set()

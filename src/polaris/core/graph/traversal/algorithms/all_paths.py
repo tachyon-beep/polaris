@@ -4,10 +4,10 @@ from time import time
 from typing import Any, Iterator, List, Optional, Set
 
 from polaris.core.exceptions import GraphOperationError
-from polaris.core.graph_paths.base import PathFinder
-from polaris.core.graph_paths.models import PathResult, PerformanceMetrics
-from polaris.core.graph_paths.types import PathFilter, WeightFunc
-from polaris.core.graph_paths.utils import create_path_result, get_edge_weight
+from ..base import PathFinder
+from ..path_models import PathResult, PerformanceMetrics
+from ..types import PathFilter, WeightFunc
+from ..utils import create_path_result, get_edge_weight
 from polaris.core.models import Edge
 
 

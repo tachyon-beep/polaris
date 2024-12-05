@@ -5,10 +5,10 @@ from datetime import datetime
 
 from polaris.core.exceptions import GraphOperationError
 from polaris.core.graph import Graph
-from polaris.core.graph_paths.algorithms.advanced.alt import ALTPathFinder
+from polaris.core.graph.traversal.algorithms.advanced.alt import ALTPathFinder
 from polaris.core.models import Edge, EdgeMetadata
 from polaris.core.enums import RelationType
-from polaris.core.graph_paths.models import PathValidationError
+from polaris.core.graph.traversal.path_models import PathValidationError
 
 
 def create_test_graph(include_direct_path: bool = True) -> Graph:

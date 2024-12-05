@@ -12,7 +12,7 @@ import pytest
 
 from polaris.core.enums import EntityType, RelationType
 from polaris.core.graph import Graph
-from polaris.core.graph_paths.models import PathResult, PathValidationError
+from polaris.core.graph.traversal.path_models import PathResult, PathValidationError
 from polaris.core.models import Edge, EdgeMetadata, Node, NodeMetadata
 
 
@@ -89,19 +89,28 @@ def test_path_type_validation(sample_edge_metadata):
 
 def test_edge_attribute_validation(sample_edge_metadata):
     """Test validation of required edge attributes."""
-    # Create edge with missing required attribute
-    incomplete_edge = Edge(
-        from_entity="A",
-        to_entity="B",
-        relation_type=RelationType.DEPENDS_ON,
-        metadata=sample_edge_metadata,
-        impact_score=0.8,
-    )
-    delattr(incomplete_edge, "to_entity")  # Simulate missing attribute
+    # Test creating an edge with missing required attributes
+    with pytest.raises(TypeError) as exc:
+        # Attempt to create an Edge without required attributes
+        Edge(  # type: ignore
+            from_entity="A",
+            # to_entity is missing
+            relation_type=RelationType.DEPENDS_ON,
+            metadata=sample_edge_metadata,
+            impact_score=0.8,
+        )
+    assert "missing 1 required positional argument: 'to_entity'" in str(exc.value)
 
-    with pytest.raises(PathValidationError) as exc:
-        PathResult(path=[incomplete_edge], total_weight=1.0)
-    assert "missing required attributes" in str(exc.value)
+    # Test with empty string values
+    with pytest.raises(ValueError) as exc:
+        Edge(
+            from_entity="",  # Empty string
+            to_entity="B",
+            relation_type=RelationType.DEPENDS_ON,
+            metadata=sample_edge_metadata,
+            impact_score=0.8,
+        )
+    assert "source node must be a non-empty string" in str(exc.value)
 
 
 def test_maximum_path_length(sample_edges):

@@ -11,8 +11,8 @@ from polaris.core.enums import RelationType
 from polaris.core.exceptions import EdgeNotFoundError, NodeNotFoundError
 from polaris.core.graph import Graph
 from polaris.core.models import Edge, EdgeMetadata
-from polaris.core.graph_paths import PathFinding, PathType, PathResult
-from polaris.core.graph_paths.cache import PathCache
+from polaris.core.graph.traversal import PathFinding, PathType, PathResult
+from polaris.core.graph.traversal.cache import PathCache
 
 
 @pytest.fixture

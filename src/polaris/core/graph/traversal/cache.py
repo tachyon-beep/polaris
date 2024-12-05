@@ -21,7 +21,7 @@ Example:
 
 from typing import Any, Dict, Optional
 
-from polaris.core.graph_paths.models import PathResult
+from .path_models import PathResult
 from polaris.infrastructure.cache import LRUCache
 
 # Constants

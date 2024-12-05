@@ -1,7 +1,7 @@
 """
-Data models for graph path finding.
+Path finding result models and validation.
 
-This module provides the core data structures used throughout the path finding package:
+This module provides specialized data structures for graph path finding:
 - PathResult: Container for path finding results with validation
 - PerformanceMetrics: Container for algorithm performance metrics
 - PathValidationError: Exception for path validation failures

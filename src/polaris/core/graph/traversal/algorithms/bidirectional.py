@@ -4,10 +4,10 @@ from time import time
 from typing import Any, Dict, List, Optional, Set, Tuple, TypedDict, Union, cast
 
 from polaris.core.exceptions import GraphOperationError
-from polaris.core.graph_paths.base import PathFinder
-from polaris.core.graph_paths.models import PathResult, PerformanceMetrics
-from polaris.core.graph_paths.types import PathFilter, WeightFunc
-from polaris.core.graph_paths.utils import (
+from ..base import PathFinder
+from ..path_models import PathResult, PerformanceMetrics
+from ..types import PathFilter, WeightFunc
+from ..utils import (
     MAX_QUEUE_SIZE,
     MemoryManager,
     PathState,

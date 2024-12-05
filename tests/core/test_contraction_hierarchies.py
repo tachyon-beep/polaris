@@ -5,7 +5,7 @@ from datetime import datetime
 
 from polaris.core.exceptions import GraphOperationError
 from polaris.core.graph import Graph
-from polaris.core.graph_paths.algorithms.advanced.contraction_hierarchies import (
+from polaris.core.graph.traversal.algorithms.advanced.contraction_hierarchies import (
     ContractionHierarchies,
     Shortcut,
 )
