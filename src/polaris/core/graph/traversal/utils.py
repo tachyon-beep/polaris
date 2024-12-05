@@ -57,18 +57,32 @@ def get_edge_weight(edge: Edge, weight_func: Optional[WeightFunc] = None) -> flo
 def is_better_cost(new_cost: float, old_cost: float) -> bool:
     """Compare costs with floating point tolerance.
 
-    For positive weights (minimization):
-        Returns True if new_cost < old_cost
-        Example: new=2, old=3 returns True because 2 < 3
+    For both standard weights and inverse weights (1/impact_score),
+    we want to minimize the total weight. In the case of inverse weights,
+    this corresponds to maximizing the total impact score.
 
-    For negative weights (maximization):
-        Returns True if new_cost < old_cost (more negative is better)
-        Example: new=-3, old=-2 returns True because -3 < -2
+    Example with inverse weights (1/impact_score):
+    Path A->B->C->E: impact scores 0.8, 0.7, 0.4
+        - Inverse weights = 1/0.8 + 1/0.7 + 1/0.4 ≈ 5.18
+
+    Path A->D->E: impact scores 0.5, 0.3
+        - Inverse weights = 1/0.5 + 1/0.3 ≈ 5.33
+
+    A->B->C->E is better because 5.18 < 5.33
+    This corresponds to higher total impact (1.9 > 0.8)
+
+    Args:
+        new_cost: The cost of the new path
+        old_cost: The cost of the existing path
+
+    Returns:
+        True if new_cost is better than old_cost
     """
     assert isinstance(new_cost, float) and isinstance(old_cost, float), "Costs must be floats"
-    # Always use the same comparison - for both positive and negative weights,
-    # we want the smaller value (more negative = better for negative weights)
-    return (old_cost - new_cost) > EPSILON
+    # For both standard and inverse weights, smaller total is better
+    # Use epsilon to handle floating point comparison
+    # Note: We want strict inequality here to ensure we find the shortest path
+    return new_cost + EPSILON < old_cost
 
 
 def calculate_path_weight(path: List[Edge], weight_func: Optional[WeightFunc] = None) -> float:
@@ -250,9 +264,10 @@ class PriorityQueue:
         self._maxsize = maxsize
 
     def add_or_update(self, item: str, priority: float) -> None:
+        """Add a new item or update priority of existing item."""
         if item in self._entry_finder:
             old_priority, old_count = self._entry_finder[item]
-            # Only update if new priority is lower (better)
+            # Only update if new priority is better
             if not is_better_cost(priority, old_priority):
                 return
             # Mark old entry as invalid
@@ -274,6 +289,17 @@ class PriorityQueue:
                 return (priority, item)
         return None
 
+    def peek(self) -> Optional[Tuple[float, str]]:
+        """Return the item with lowest priority without removing it."""
+        while self._queue:
+            priority, count, item = self._queue[0]  # Look at top item
+            stored_priority, stored_count = self._entry_finder.get(item, (None, None))
+            if stored_priority == priority and stored_count == count:
+                return (priority, item)
+            # Remove invalid entry
+            heappop(self._queue)
+        return None
+
     def empty(self) -> bool:
         """Return True if the queue is empty."""
         return len(self._entry_finder) == 0
@@ -281,6 +307,18 @@ class PriorityQueue:
     def __len__(self) -> int:
         """Return the number of valid items in the queue."""
         return len(self._entry_finder)
+
+    def __iter__(self):
+        """Return iterator over queue items in priority order."""
+        items = []
+        while not self.empty():
+            item = self.pop()
+            if item is not None:
+                items.append(item)
+        # Restore items to queue
+        for priority, item in items:
+            self.add_or_update(item, priority)
+        return iter(items)
 
 
 class MemoryManager:

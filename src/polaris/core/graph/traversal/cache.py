@@ -19,13 +19,13 @@ Example:
     >>> PathCache.put(key, result)  # Cache result
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Set
 
 from .path_models import PathResult
 from polaris.infrastructure.cache import LRUCache
 
 # Constants
-PATH_CACHE_SIZE = 10000  # Maximum number of cached results
+PATH_CACHE_SIZE = 100000  # Increased default size
 PATH_CACHE_TTL = 3600  # Default TTL in seconds (1 hour)
 
 
@@ -44,6 +44,7 @@ class PathCache:
         - Adaptive TTL support
         - Cache metrics tracking
         - Thread-safe operations
+        - Selective invalidation
 
     Example:
         >>> # Check cache for existing result
@@ -65,6 +66,7 @@ class PathCache:
     )
     _hits = 0
     _misses = 0
+    _invalidated_keys: Set[str] = set()  # Track invalidated keys
 
     def __new__(cls):
         if cls._instance is None:
@@ -114,7 +116,7 @@ class PathCache:
         Get cached path result.
 
         Retrieves a previously cached path result. Returns None if the
-        key doesn't exist or the entry has expired.
+        key doesn't exist, has been invalidated, or the entry has expired.
 
         Args:
             key: Cache key to look up
@@ -127,6 +129,10 @@ class PathCache:
             ...     print("Cache hit!")
             ...     return result
         """
+        if key in cls._invalidated_keys:
+            cls._misses += 1
+            return None
+
         result = cls.cache.get(key)
         if result is not None:
             cls._hits += 1
@@ -149,7 +155,24 @@ class PathCache:
         Example:
             >>> PathCache.put(key, path_result)
         """
+        cls._invalidated_keys.discard(key)  # Remove from invalidated set if present
         cls.cache.put(key, result)
+
+    @classmethod
+    def invalidate(cls, key: str) -> None:
+        """
+        Invalidate a specific cache entry.
+
+        Marks a cache entry as invalid without removing it from the underlying cache.
+        This is more efficient than removing entries when many invalidations occur.
+
+        Args:
+            key: Cache key to invalidate
+
+        Example:
+            >>> PathCache.invalidate(key)  # Mark entry as invalid
+        """
+        cls._invalidated_keys.add(key)
 
     @classmethod
     def get_metrics(cls) -> Dict[str, float]:
@@ -162,6 +185,7 @@ class PathCache:
         - size: Current cache size
         - hit_rate: Cache hit rate
         - avg_access_time_ms: Average access time in milliseconds
+        - invalidated_keys: Number of invalidated keys
 
         Returns:
             Dictionary containing cache metrics
@@ -178,6 +202,7 @@ class PathCache:
                 "hits": float(cls._hits),
                 "misses": float(cls._misses),
                 "hit_rate": hit_rate,
+                "invalidated_keys": float(len(cls._invalidated_keys)),
             }
         )
         return metrics
@@ -187,7 +212,7 @@ class PathCache:
         """
         Clear all cached results.
 
-        Removes all entries from the cache, resetting it to an empty state.
+        Removes all entries from the cache and resets metrics.
         This is useful for testing or when cache invalidation is needed.
 
         Example:
@@ -196,6 +221,7 @@ class PathCache:
         cls.cache.clear()
         cls._hits = 0
         cls._misses = 0
+        cls._invalidated_keys.clear()
 
     @classmethod
     def reconfigure(cls, max_size: int = PATH_CACHE_SIZE, ttl: int = PATH_CACHE_TTL) -> None:
@@ -221,3 +247,4 @@ class PathCache:
         )
         cls._hits = 0
         cls._misses = 0
+        cls._invalidated_keys.clear()

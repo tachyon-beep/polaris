@@ -28,6 +28,7 @@ from .traversal import (
     BidirectionalFinder,
     ShortestPathFinder,
     PathResult,
+    PathType,
 )
 from ..models.edge import Edge
 from ..exceptions import EdgeNotFoundError, NodeNotFoundError
@@ -45,7 +46,7 @@ class Graph:
     def __init__(
         self,
         edges: List[Edge],
-        cache_size: int = 1000,
+        cache_size: int = 100000,  # Increased default cache size
         cache_ttl: int = 3600,
     ):
         """
@@ -73,6 +74,35 @@ class Graph:
         with self.state_manager.transaction():
             yield
 
+    def _invalidate_affected_paths(self, edge: Edge) -> None:
+        """Invalidate cached paths that could be affected by edge changes."""
+        # Get all paths from cache
+        metrics = PathCache.get_metrics()
+        cache_size = int(metrics["size"])
+
+        # If cache is nearly empty, just clear it
+        if cache_size < 10:
+            PathCache.clear()
+            return
+
+        # Invalidate paths that could be affected by this edge
+        from_node = edge.from_entity
+        to_node = edge.to_entity
+
+        # Get all neighbors to invalidate paths that might use this edge
+        neighbors_from = self.get_neighbors(from_node)
+        neighbors_to = self.get_neighbors(to_node)
+
+        # Invalidate paths between affected nodes
+        affected_nodes = {from_node, to_node} | neighbors_from | neighbors_to
+        for node1 in affected_nodes:
+            for node2 in affected_nodes:
+                if node1 != node2:
+                    # Generate all possible cache keys for this node pair
+                    for path_type in ["shortest", "all"]:
+                        key = PathCache.get_cache_key(node1, node2, path_type)
+                        PathCache.invalidate(key)
+
     def add_edge(self, edge: Edge) -> None:
         """Add a single edge to the graph."""
         with self.state_manager.transaction() as graph:
@@ -82,8 +112,8 @@ class Graph:
             details.add_node(edge.from_entity)
             details.add_node(edge.to_entity)
             self.event_dispatcher.dispatch(GraphEvent.EDGE_ADDED, details)
-            # Clear path cache since graph structure changed
-            PathCache.clear()
+            # Invalidate affected paths instead of clearing entire cache
+            self._invalidate_affected_paths(edge)
 
     def add_edges_batch(self, edges: List[Edge]) -> None:
         """Add multiple edges to the graph efficiently."""
@@ -95,7 +125,7 @@ class Graph:
                 details.add_node(edge.from_entity)
                 details.add_node(edge.to_entity)
             self.event_dispatcher.dispatch(GraphEvent.EDGE_ADDED, details)
-            # Clear path cache since graph structure changed
+            # For batch operations, clear the entire cache
             PathCache.clear()
 
     def remove_edge(self, from_node: str, to_node: str) -> None:
@@ -107,8 +137,8 @@ class Graph:
                 details = GraphEventDetails()
                 details.add_edge(edge)
                 self.event_dispatcher.dispatch(GraphEvent.EDGE_REMOVED, details)
-                # Clear path cache since graph structure changed
-                PathCache.clear()
+                # Invalidate affected paths instead of clearing entire cache
+                self._invalidate_affected_paths(edge)
             else:
                 raise EdgeNotFoundError(f"No edge exists from '{from_node}' to '{to_node}'")
 
@@ -124,7 +154,7 @@ class Graph:
                 else:
                     raise EdgeNotFoundError(f"No edge exists from '{from_node}' to '{to_node}'")
             self.event_dispatcher.dispatch(GraphEvent.EDGE_REMOVED, details)
-            # Clear path cache since graph structure changed
+            # For batch operations, clear the entire cache
             PathCache.clear()
 
     def has_edge(self, from_node: str, to_node: str) -> bool:
@@ -168,9 +198,7 @@ class Graph:
         from_node: str,
         to_node: str,
         max_depth: Optional[int] = None,
-        algorithm: Type[
-            AllPathsFinder | BidirectionalFinder | ShortestPathFinder
-        ] = ShortestPathFinder,
+        path_type: PathType = PathType.SHORTEST,
         **kwargs,
     ) -> Union[PathResult, Iterator[PathResult]]:
         """
@@ -180,23 +208,34 @@ class Graph:
             from_node (str): Starting node
             to_node (str): Target node
             max_depth (Optional[int]): Maximum path length
-            algorithm: Path finding algorithm to use
+            path_type (PathType): Type of path finding to use
             **kwargs: Additional arguments passed to path finder
 
         Returns:
             Union[PathResult, Iterator[PathResult]]: Found path(s)
+            For SHORTEST path type, returns a single PathResult
+            For ALL path type, returns an Iterator[PathResult]
         """
-        finder = algorithm(self)
-        return finder.find_paths(
-            start_node=from_node, end_node=to_node, max_length=max_depth, **kwargs
-        )
+        if path_type in (PathType.ALL, PathType.ALL_PATHS, PathType.FILTERED):
+            finder = AllPathsFinder(self)
+            return finder.find_paths(
+                start_node=from_node, end_node=to_node, max_length=max_depth, **kwargs
+            )
+        else:
+            finder = ShortestPathFinder(self)
+            paths = finder.find_paths(
+                start_node=from_node, end_node=to_node, max_length=max_depth, **kwargs
+            )
+            try:
+                return next(paths)
+            except StopIteration:
+                raise NodeNotFoundError(f"No path exists between {from_node} and {to_node}")
 
     def clear(self) -> None:
         """Clear the graph."""
         with self.state_manager.transaction() as graph:
             graph.clear()
             self.event_dispatcher.dispatch(GraphEvent.GRAPH_CLEARED, GraphEventDetails())
-            # Clear path cache since graph structure changed
             PathCache.clear()
 
     @classmethod
