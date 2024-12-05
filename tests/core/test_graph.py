@@ -3,6 +3,7 @@ Tests for core graph functionality.
 """
 
 from datetime import datetime
+from typing import Iterator, List, cast
 
 import pytest
 
@@ -10,6 +11,8 @@ from polaris.core.enums import RelationType
 from polaris.core.exceptions import EdgeNotFoundError, NodeNotFoundError
 from polaris.core.graph import Graph
 from polaris.core.models import Edge, EdgeMetadata
+from polaris.core.graph_paths import PathFinding, PathType, PathResult
+from polaris.core.graph_paths.cache import PathCache
 
 
 @pytest.fixture
@@ -494,13 +497,19 @@ def test_find_paths(sample_edges):
     graph = Graph(edges=sample_edges)
 
     # Test direct path
-    paths = graph.find_paths("A", "B")
-    assert ["A", "B"] in paths
+    result = graph.find_paths("A", "B")
+    assert isinstance(result, PathResult)
+    assert result.nodes == ["A", "B"]
 
     # Test indirect path
-    paths = graph.find_paths("A", "C")
-    assert ["A", "C"] in paths  # Direct path
-    assert ["A", "B", "C"] in paths  # Indirect path
+    results = graph.find_paths("A", "C", path_type=PathType.ALL)
+    paths = list(cast(Iterator[PathResult], results))
+    assert len(paths) == 2
+
+    # Verify both possible paths exist
+    path_nodes = [path.nodes for path in paths]
+    assert ["A", "C"] in path_nodes  # Direct path
+    assert ["A", "B", "C"] in path_nodes  # Indirect path
 
 
 def test_find_paths_with_max_depth(sample_edges):
@@ -508,43 +517,40 @@ def test_find_paths_with_max_depth(sample_edges):
     graph = Graph(edges=sample_edges)
 
     # Test with max_depth=1 (only direct paths)
-    paths = graph.find_paths("A", "C", max_depth=1)
+    results = graph.find_paths("A", "C", path_type=PathType.ALL, max_depth=1)
+    paths = list(cast(Iterator[PathResult], results))
     assert len(paths) == 1
-    assert ["A", "C"] in paths
-    assert ["A", "B", "C"] not in paths
+    assert paths[0].nodes == ["A", "C"]
 
 
 def test_path_caching(sample_edges):
     """Test that paths are properly cached and retrieved."""
+    # Clear cache before testing
+    PathCache.clear()
+
     graph = Graph(edges=sample_edges)
 
     # First call should compute paths
-    paths1 = graph.find_paths("A", "C")
+    result1 = graph.find_paths("A", "C")
+    assert isinstance(result1, PathResult)
 
     # Second call should retrieve from cache
-    paths2 = graph.find_paths("A", "C")
+    result2 = graph.find_paths("A", "C")
+    assert isinstance(result2, PathResult)
 
-    assert paths1 == paths2
-    assert graph.get_path_cache_stats()["size"] > 0
+    assert result1.nodes == result2.nodes
+    assert result1.total_weight == result2.total_weight
 
-
-def test_path_cache_key():
-    """Test path cache key generation with different parameters."""
-    graph = Graph(edges=[])
-
-    # Test with different combinations of parameters
-    key1 = graph._get_path_cache_key("A", "B", None)
-    key2 = graph._get_path_cache_key("A", "B", 3)
-    key3 = graph._get_path_cache_key("B", "A", None)
-
-    # Keys should be different for different parameters
-    assert key1 != key2
-    assert key1 != key3
-    assert key2 != key3
+    # Verify cache hit
+    metrics = PathFinding.get_cache_metrics()
+    assert metrics["hits"] > 0
 
 
 def test_path_cache_invalidation(sample_edges, sample_edge_metadata):
     """Test that path cache is invalidated when graph structure changes."""
+    # Clear cache before testing
+    PathCache.clear()
+
     graph = Graph(edges=sample_edges)
 
     # Cache some paths
@@ -561,20 +567,8 @@ def test_path_cache_invalidation(sample_edges, sample_edge_metadata):
     graph.add_edge(new_edge)
 
     # Cache should be cleared
-    assert graph.get_path_cache_stats()["size"] == 0
-
-
-def test_path_cache_clear(sample_edges):
-    """Test manually clearing the path cache."""
-    graph = Graph(edges=sample_edges)
-
-    # Cache some paths
-    graph.find_paths("A", "C")
-    assert graph.get_path_cache_stats()["size"] > 0
-
-    # Clear cache
-    graph.clear_path_cache()
-    assert graph.get_path_cache_stats()["size"] == 0
+    metrics = PathFinding.get_cache_metrics()
+    assert metrics["size"] == 0
 
 
 def test_get_edge_safe_nonexistent_nodes(sample_edges):

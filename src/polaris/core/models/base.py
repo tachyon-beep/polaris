@@ -25,7 +25,7 @@ def validate_metric_range(
 ) -> None:
     """Validate that a metric value falls within the specified range."""
     if not min_range <= value <= max_range:
-        raise ValueError(f"{name} value {value} must be between {min_range} and {max_range}")
+        raise ValueError(f"{name} must be between {min_range:.1f} and {max_range:.1f}")
 
 
 def validate_custom_metrics(custom_metrics: Dict[str, Tuple[float, float, float]]) -> None:

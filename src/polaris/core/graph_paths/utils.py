@@ -11,14 +11,16 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import wraps
 from heapq import heappop, heappush
-from typing import Any, Callable, Dict, Generator, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Generator, List, Optional, Set, Tuple, TYPE_CHECKING
 
 import psutil
 
-from polaris.core.graph import Graph
 from polaris.core.graph_paths.models import PathResult, PathValidationError
 from polaris.core.graph_paths.types import WeightFunc, allow_negative_weights
 from polaris.core.models import Edge
+
+if TYPE_CHECKING:
+    from polaris.core.graph import Graph
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -85,7 +87,7 @@ def calculate_path_weight(path: List[Edge], weight_func: Optional[WeightFunc] = 
 
 
 def create_path_result(
-    path: List[Edge], weight_func: Optional[WeightFunc], graph: Optional[Graph] = None
+    path: List[Edge], weight_func: Optional[WeightFunc], graph: Optional["Graph"] = None
 ) -> PathResult:
     """Create PathResult from path."""
     total_weight = calculate_path_weight(path, weight_func)
@@ -100,13 +102,16 @@ def create_path_result(
 
 def validate_path(
     path: List[Edge],
-    graph: Graph,
+    graph: "Graph",
     weight_func: Optional[WeightFunc] = None,
     max_length: Optional[int] = None,
     allow_cycles: bool = False,
     weight_epsilon: float = EPSILON,
 ) -> None:
     """Validate path with comprehensive checks."""
+    # Import Graph at runtime to avoid circular import
+    from polaris.core.graph import Graph
+
     if not path:
         return
 

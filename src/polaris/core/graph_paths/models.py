@@ -17,10 +17,12 @@ Example:
 """
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
 
-from polaris.core.graph import Graph
 from polaris.core.models import Edge
+
+if TYPE_CHECKING:
+    from polaris.core.graph import Graph
 
 
 class PathValidationError(Exception):
@@ -113,7 +115,7 @@ class PathResult:
 
     def validate(
         self,
-        graph: Graph,
+        graph: "Graph",
         weight_func: Optional[Any] = None,
         max_length: Optional[int] = None,
         weight_epsilon: float = 1e-9,
@@ -147,6 +149,9 @@ class PathResult:
             ...     weight_epsilon=1e-6
             ... )
         """
+        # Import Graph class at runtime to avoid circular import
+        from polaris.core.graph import Graph
+
         if not isinstance(graph, Graph):
             raise TypeError("graph must be a Graph instance")
 

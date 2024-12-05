@@ -13,11 +13,10 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from heapq import heappop, heappush
-from typing import Callable, Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
 from polaris.core.enums import RelationType
 from polaris.core.exceptions import GraphOperationError
-from polaris.core.graph import Graph
 from polaris.core.graph_paths.base import PathFinder
 from polaris.core.graph_paths.models import PathResult
 from polaris.core.graph_paths.utils import (
@@ -28,6 +27,9 @@ from polaris.core.graph_paths.utils import (
     validate_path,
 )
 from polaris.core.models import Edge, EdgeMetadata
+
+if TYPE_CHECKING:
+    from polaris.core.graph import Graph
 
 # Use CONNECTS_TO temporarily for shortcuts
 SHORTCUT_TYPE = RelationType.CONNECTS_TO
@@ -54,7 +56,7 @@ class ContractionHierarchies(PathFinder[PathResult]):
     - Memory-efficient path reconstruction
     """
 
-    def __init__(self, graph: Graph, max_memory_mb: Optional[float] = None):
+    def __init__(self, graph: "Graph", max_memory_mb: Optional[float] = None):
         """Initialize with graph and optional memory limit."""
         super().__init__(graph)
         self.memory_manager = MemoryManager(max_memory_mb)

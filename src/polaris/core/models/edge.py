@@ -58,7 +58,7 @@ class EdgeMetadata:
 
 
 @validate_dataclass
-@dataclass
+@dataclass(frozen=True)
 class Edge:
     """
     Base edge model representing a connection in the knowledge graph.
@@ -104,6 +104,20 @@ class Edge:
         # Validate custom metrics ranges
         validate_custom_metrics(self.custom_metrics)
 
+    def __hash__(self):
+        """Generate hash based on immutable fields."""
+        return hash((self.from_entity, self.to_entity, self.relation_type))
+
+    def __eq__(self, other):
+        """Compare edges based on key fields."""
+        if not isinstance(other, Edge):
+            return NotImplemented
+        return (
+            self.from_entity == other.from_entity
+            and self.to_entity == other.to_entity
+            and self.relation_type == other.relation_type
+        )
+
     def add_custom_metric(
         self, name: str, value: float, min_range: float = 0.0, max_range: float = 1.0
     ) -> None:
@@ -122,8 +136,10 @@ class Edge:
         if not isinstance(value, (int, float)):
             raise ValueError(f"Custom metric {name} must be a numeric value")
         validate_metric_range(name, value, min_range, max_range)
-        self.custom_metrics[name] = (value, min_range, max_range)
-        self.metadata.last_modified = datetime.now()
+        object.__setattr__(
+            self, "custom_metrics", {**self.custom_metrics, name: (value, min_range, max_range)}
+        )
+        object.__setattr__(self.metadata, "last_modified", datetime.now())
 
     def update_validation_status(self, new_status: str) -> None:
         """
@@ -137,5 +153,5 @@ class Edge:
         """
         if new_status not in {"unverified", "verified", "invalid"}:
             raise ValueError("validation_status must be one of: unverified, verified, invalid")
-        self.validation_status = new_status
-        self.metadata.last_modified = datetime.now()
+        object.__setattr__(self, "validation_status", new_status)
+        object.__setattr__(self.metadata, "last_modified", datetime.now())
