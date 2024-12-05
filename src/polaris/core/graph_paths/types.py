@@ -13,8 +13,8 @@ from .models import PathResult
 WeightFunc = Callable[[Edge], float]
 PathFilter = Callable[[List[Edge]], bool]
 
-# Type variables for generic path finding
-P = TypeVar("P", PathResult, Iterator[PathResult])
+# Type variable for path finding return types
+P = TypeVar("P", PathResult, Iterator[PathResult], covariant=True)
 
 
 class PathFinderProtocol(Protocol[P]):

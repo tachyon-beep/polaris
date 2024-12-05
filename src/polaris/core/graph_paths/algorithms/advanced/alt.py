@@ -42,7 +42,7 @@ class LandmarkDistance:
     backward: Dict[str, float]
 
 
-class ALTPathFinder(PathFinder):
+class ALTPathFinder(PathFinder[PathResult]):
     """
     A* with Landmarks implementation.
 

@@ -15,9 +15,10 @@ of related nodes, which is valuable for:
 - Detecting community structures
 """
 
-from collections import defaultdict
-from typing import Dict, List, Set
+from collections import defaultdict, deque
+from typing import Dict, List, Set, Optional
 
+from .exceptions import GraphOperationError
 from .graph import Graph
 
 
@@ -70,10 +71,10 @@ class ComponentAnalysis:
         return undirected_adjacency
 
     @staticmethod
-    def _find_component_dfs(
+    def _find_component_bfs(
         start: str, adjacency: Dict[str, Set[str]], visited: Set[str]
     ) -> Set[str]:
-        """Find all nodes in a component using depth-first search.
+        """Find all nodes in a component using breadth-first search.
 
         Args:
             start (str): Starting node.
@@ -84,18 +85,85 @@ class ComponentAnalysis:
             Set[str]: Set of nodes in the component.
         """
         component = {start}
-        stack = [start]
+        queue = deque([start])
         visited.add(start)
 
-        while stack:
-            current_node = stack.pop()
+        while queue:
+            current_node = queue.popleft()
             for neighbor in adjacency[current_node]:
                 if neighbor not in visited:
                     visited.add(neighbor)
                     component.add(neighbor)
-                    stack.append(neighbor)
+                    queue.append(neighbor)
 
         return component
+
+    @staticmethod
+    def _find_components_impl(graph: Graph) -> List[Set[str]]:
+        """Implementation of component finding using BFS.
+
+        Args:
+            graph (Graph): The graph instance to analyze.
+
+        Returns:
+            List[Set[str]]: List of components.
+        """
+        components = []
+        visited = set()
+        all_nodes = ComponentAnalysis._collect_all_nodes(graph)
+        undirected_adjacency = ComponentAnalysis._build_undirected_adjacency(graph)
+
+        # Find components using undirected adjacency
+        for node in all_nodes:
+            if node not in visited:
+                component = ComponentAnalysis._find_component_bfs(
+                    node, undirected_adjacency, visited
+                )
+                if component:
+                    components.append(component)
+
+        return components
+
+    @staticmethod
+    def _find_components_iterative(graph: Graph) -> List[Set[str]]:
+        """Iterative implementation for finding components.
+
+        This is a fallback implementation that uses an explicit stack instead of recursion,
+        making it suitable for very large graphs where recursion might cause stack overflow.
+
+        Args:
+            graph (Graph): The graph instance to analyze.
+
+        Returns:
+            List[Set[str]]: List of components.
+        """
+        components = []
+        visited = set()
+        all_nodes = ComponentAnalysis._collect_all_nodes(graph)
+        undirected_adjacency = ComponentAnalysis._build_undirected_adjacency(graph)
+
+        for start_node in all_nodes:
+            if start_node in visited:
+                continue
+
+            # Initialize component
+            component = {start_node}
+            stack = [start_node]
+            visited.add(start_node)
+
+            # Process stack iteratively
+            while stack:
+                current_node = stack.pop()
+                for neighbor in undirected_adjacency[current_node]:
+                    if neighbor not in visited:
+                        visited.add(neighbor)
+                        component.add(neighbor)
+                        stack.append(neighbor)
+
+            if component:
+                components.append(component)
+
+        return components
 
     @staticmethod
     def _tarjan_scc(
@@ -220,7 +288,7 @@ class ComponentAnalysis:
 
         A weakly connected component is a subgraph where every pair of nodes has
         a path between them when ignoring edge directions. This method identifies
-        all such components using depth-first search traversal.
+        all such components using breadth-first search traversal.
 
         This is a less strict form of connectivity than strongly connected components,
         as it doesn't consider edge directions. For directed graphs where edge
@@ -232,6 +300,9 @@ class ComponentAnalysis:
         Returns:
             List[Set[str]]: A list of sets, where each set contains the node IDs
                            belonging to a distinct weakly connected component.
+
+        Raises:
+            GraphOperationError: If the graph is empty or if there's an error during component finding.
 
         Example:
             >>> graph = Graph([
@@ -249,19 +320,16 @@ class ComponentAnalysis:
             - For directed graphs where edge direction matters, use
               find_strongly_connected_components() instead
         """
-        components = []
-        visited = set()
-        all_nodes = ComponentAnalysis._collect_all_nodes(graph)
-        undirected_adjacency = ComponentAnalysis._build_undirected_adjacency(graph)
+        if not graph.get_nodes():
+            return []
 
-        # Find components using undirected adjacency
-        for node in all_nodes:
-            if node not in visited:
-                component = ComponentAnalysis._find_component_dfs(
-                    node, undirected_adjacency, visited
-                )
-                if component:
-                    components.append(component)
+        try:
+            components = ComponentAnalysis._find_components_impl(graph)
+        except RecursionError:
+            # Fall back to iterative implementation for large graphs
+            components = ComponentAnalysis._find_components_iterative(graph)
+        except Exception as e:
+            raise GraphOperationError(f"Error finding components: {str(e)}")
 
         return components
 
@@ -286,7 +354,8 @@ class ComponentAnalysis:
             float: Clustering coefficient value between 0 and 1, where:
                   - 0 indicates no connections between neighbors
                   - 1 indicates all possible directed connections exist between neighbors
-                  - For nodes with fewer than 2 neighbors, returns 0
+                  - For nodes with fewer than 2 neighbors, returns 0.0
+                  - Returns 0.0 if node doesn't exist in graph
 
         Example:
             >>> graph = Graph([
@@ -303,9 +372,12 @@ class ComponentAnalysis:
             - Self-loops are excluded from the calculation
             - The coefficient considers both incoming and outgoing edges
             - For k neighbors, the maximum number of directed connections is k(k-1)
-            - The coefficient is 0 for nodes with fewer than 2 neighbors
+            - The coefficient is 0.0 for nodes with fewer than 2 neighbors
             - The order of neighbor traversal is not guaranteed due to the use of sets
         """
+        if not graph.has_node(node):
+            return 0.0
+
         # Get all neighbors (both incoming and outgoing)
         out_neighbors = graph.get_neighbors(node)
         in_neighbors = set(
@@ -316,7 +388,7 @@ class ComponentAnalysis:
         # Remove self-loops from the neighbor set
         neighbors.discard(node)
 
-        # Return 0 if not enough neighbors for meaningful clustering
+        # Return 0.0 if not enough neighbors for meaningful clustering
         if len(neighbors) < 2:
             return 0.0
 

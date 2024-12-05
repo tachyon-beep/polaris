@@ -43,7 +43,7 @@ class AccessNode:
     first_hop: Optional[Edge]
 
 
-class TransitNodeRouting(PathFinder):
+class TransitNodeRouting(PathFinder[PathResult]):
     """
     Transit Node Routing implementation for fast path queries.
 

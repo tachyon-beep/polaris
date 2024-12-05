@@ -43,7 +43,7 @@ class HubLabel:
     first_hop: Optional[Edge]
 
 
-class HubLabels(PathFinder):
+class HubLabels(PathFinder[PathResult]):
     """
     Hub Labeling implementation for fast path queries.
 

@@ -78,16 +78,36 @@ class PathFinding:
         start_node: str,
         end_node: str,
         weight_func: Optional[WeightFunc] = None,
+        max_length: Optional[int] = None,
     ) -> PathResult:
-        """Find shortest path between nodes."""
+        """
+        Find shortest path between nodes.
+
+        Args:
+            graph: Graph to search in
+            start_node: Starting node ID
+            end_node: Target node ID
+            weight_func: Optional edge weight function
+            max_length: Optional maximum path length
+
+        Returns:
+            PathResult containing the shortest path
+        """
+        # Validate max_length if provided
+        cls._validate_length(max_length)
+
         # Try cache first
-        cache_key = PathCache.get_cache_key(start_node, end_node, PathType.SHORTEST)
+        cache_key = PathCache.get_cache_key(
+            start_node, end_node, PathType.SHORTEST, max_length=max_length
+        )
         if result := PathCache.get(cache_key):
             return result
 
         # Cache miss - compute path
         finder = ShortestPathFinder(graph)
-        result = finder.find_path(start_node, end_node, weight_func=weight_func)
+        result = finder.find_path(
+            start_node, end_node, weight_func=weight_func, max_length=max_length
+        )
 
         # Cache result
         PathCache.put(cache_key, result)
@@ -182,7 +202,9 @@ class PathFinding:
         cls._validate_max_paths(max_paths)
 
         if path_type == PathType.SHORTEST:
-            return cls.shortest_path(graph, start_node, end_node, weight_func=weight_func)
+            return cls.shortest_path(
+                graph, start_node, end_node, weight_func=weight_func, max_length=max_length
+            )
         elif path_type == PathType.BIDIRECTIONAL:
             return cls.bidirectional_search(
                 graph, start_node, end_node, max_depth=max_length, weight_func=weight_func

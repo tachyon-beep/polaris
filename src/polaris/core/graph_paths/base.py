@@ -19,7 +19,7 @@ WeightFunc = Callable[[Edge], float]
 PathFilter = Callable[[List[Edge]], bool]
 
 # Type variable for path finding return types
-P = TypeVar("P", PathResult, Iterator[PathResult])
+P = TypeVar("P", PathResult, Iterator[PathResult], covariant=True)
 
 
 class PathFinder(ABC, Generic[P]):

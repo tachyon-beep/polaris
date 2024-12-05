@@ -122,8 +122,8 @@ def get_edge_weight(edge: Edge, weight_func: Optional[WeightFunc] = None) -> flo
         weight = weight_func(edge)
         if not isinstance(weight, (int, float)):
             raise ValueError("Weight must be numeric")
-        if weight <= 0 or math.isnan(weight) or math.isinf(weight):
-            raise ValueError("Edge weight must be positive finite number")
+        if math.isnan(weight) or math.isinf(weight):
+            raise ValueError("Edge weight must be finite number")
         return float(weight)
     except Exception as e:
         raise ValueError(
@@ -339,11 +339,6 @@ def validate_path(
                 if math.isnan(weight) or math.isinf(weight):
                     raise PathValidationError(
                         f"Invalid weight {weight} for edge "
-                        f"{edge.from_entity} -> {edge.to_entity}"
-                    )
-                if weight <= 0:
-                    raise PathValidationError(
-                        f"Non-positive weight {weight} for edge "
                         f"{edge.from_entity} -> {edge.to_entity}"
                     )
                 new_total = total_weight + weight

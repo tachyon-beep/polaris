@@ -12,14 +12,16 @@ The schema validation system ensures that nodes and edges conform to
 their expected structure and data types as defined in JSON schemas.
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, TYPE_CHECKING
 
 from jsonschema import ValidationError as JsonSchemaError
 from jsonschema import validate as json_validate
 
 from ...core.enums import EntityType, RelationType
-from ...core.models import Edge, Node
 from .base import ValidationResult
+
+if TYPE_CHECKING:
+    from ...core.models import Edge, Node
 
 
 class SchemaValidator:
@@ -100,7 +102,7 @@ class SchemaValidator:
         """
         self.edge_schemas[relation_type] = schema
 
-    def validate_node(self, node: Node) -> ValidationResult:
+    def validate_node(self, node: "Node") -> ValidationResult:
         """
         Validate a node against its registered schema.
 
@@ -142,7 +144,7 @@ class SchemaValidator:
             context={"node_type": node.entity_type.name},
         )
 
-    def validate_edge(self, edge: Edge) -> ValidationResult:
+    def validate_edge(self, edge: "Edge") -> ValidationResult:
         """
         Validate an edge against its registered schema.
 

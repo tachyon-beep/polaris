@@ -10,7 +10,7 @@ from polaris.core.enums import EntityType, RelationType
 from polaris.core.exceptions import NodeNotFoundError
 from polaris.core.graph import Graph
 from polaris.core.graph_subgraphs import SubgraphExtraction
-from polaris.core.models import Edge, EdgeMetadata, Node
+from polaris.core.models import Edge, EdgeMetadata, Node, NodeMetadata, NodeMetrics
 
 
 @pytest.fixture
@@ -25,7 +25,20 @@ def sample_edge_metadata():
 
 
 @pytest.fixture
-def sample_graph(sample_edge_metadata):
+def sample_node_metadata():
+    """Fixture providing sample node metadata."""
+    return NodeMetadata(
+        created_at=datetime.now(),
+        last_modified=datetime.now(),
+        version=1,
+        author="test_author",
+        source="test_source",
+        metrics=NodeMetrics(),
+    )
+
+
+@pytest.fixture
+def sample_graph(sample_edge_metadata, sample_node_metadata):
     """
     Fixture providing a test graph with the following structure:
     A -> B -> D
@@ -75,31 +88,31 @@ def sample_graph(sample_edge_metadata):
             name="A",
             entity_type=EntityType.CODE_MODULE,
             observations=[],
-            metadata=sample_edge_metadata,
+            metadata=sample_node_metadata,
         ),
         Node(
             name="B",
             entity_type=EntityType.CODE_FUNCTION,
             observations=[],
-            metadata=sample_edge_metadata,
+            metadata=sample_node_metadata,
         ),
         Node(
             name="C",
             entity_type=EntityType.CODE_MODULE,
             observations=[],
-            metadata=sample_edge_metadata,
+            metadata=sample_node_metadata,
         ),
         Node(
             name="D",
             entity_type=EntityType.CODE_FUNCTION,
             observations=[],
-            metadata=sample_edge_metadata,
+            metadata=sample_node_metadata,
         ),
         Node(
             name="E",
             entity_type=EntityType.CODE_MODULE,
             observations=[],
-            metadata=sample_edge_metadata,
+            metadata=sample_node_metadata,
         ),
     ]
     return Graph(edges=edges), nodes
@@ -375,7 +388,7 @@ def test_extract_by_type_invalid_types(sample_graph):
     assert len(filtered_edges) == 0  # No edges match invalid relation
 
 
-def test_complex_filtering(sample_edge_metadata):
+def test_complex_filtering(sample_edge_metadata, sample_node_metadata):
     """Test complex filtering scenarios."""
     # Create a more complex graph with various entity and relation types
     edges = [
@@ -413,19 +426,19 @@ def test_complex_filtering(sample_edge_metadata):
             name="A",
             entity_type=EntityType.CODE_MODULE,
             observations=[],
-            metadata=sample_edge_metadata,
+            metadata=sample_node_metadata,
         ),
         Node(
             name="B",
             entity_type=EntityType.CODE_FUNCTION,
             observations=[],
-            metadata=sample_edge_metadata,
+            metadata=sample_node_metadata,
         ),
         Node(
             name="C",
             entity_type=EntityType.CODE_MODULE,
             observations=[],
-            metadata=sample_edge_metadata,
+            metadata=sample_node_metadata,
         ),
     ]
     graph = Graph(edges=edges)

@@ -424,8 +424,8 @@ def test_build_undirected_adjacency(sample_edge_metadata):
     assert "B" in undirected["C"]
 
 
-def test_find_component_dfs(sample_edge_metadata):
-    """Test _find_component_dfs method."""
+def test_find_component_bfs(sample_edge_metadata):
+    """Test _find_component_bfs method."""
     edges = [
         Edge(
             from_entity="A",
@@ -454,11 +454,11 @@ def test_find_component_dfs(sample_edge_metadata):
     visited = set()
 
     # Test finding first component
-    component = ComponentAnalysis._find_component_dfs("A", undirected, visited)
+    component = ComponentAnalysis._find_component_bfs("A", undirected, visited)
     assert component == {"A", "B", "C"}
 
     # Test finding second component
-    component = ComponentAnalysis._find_component_dfs("D", undirected, visited)
+    component = ComponentAnalysis._find_component_bfs("D", undirected, visited)
     assert component == {"D", "E"}
 
 

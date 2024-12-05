@@ -17,11 +17,14 @@ These validations help maintain data quality and consistency throughout the syst
 """
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from ...core.exceptions import ValidationError
-from ...core.models import Edge, EdgeMetadata, Node, NodeMetadata
 from .base import ValidationResult
+
+# Use string literals for forward references to break circular imports
+if TYPE_CHECKING:
+    from ...core.models import Edge, EdgeMetadata, Node, NodeMetadata
 
 
 class DataIntegrityValidator:
@@ -100,7 +103,7 @@ class DataIntegrityValidator:
         return errors
 
     @staticmethod
-    def _validate_node_metadata(metadata: NodeMetadata) -> List[str]:
+    def _validate_node_metadata(metadata: "NodeMetadata") -> List[str]:
         """
         Validate node metadata.
 
@@ -114,7 +117,8 @@ class DataIntegrityValidator:
         """
         errors = []
 
-        if not isinstance(metadata, NodeMetadata):
+        # Use string comparison to avoid circular import
+        if metadata.__class__.__name__ != "NodeMetadata":
             return ["Invalid metadata type"]
 
         dt_error = DataIntegrityValidator._validate_metadata_datetime(
@@ -135,7 +139,7 @@ class DataIntegrityValidator:
         return errors
 
     @staticmethod
-    def _validate_edge_metadata(metadata: EdgeMetadata) -> List[str]:
+    def _validate_edge_metadata(metadata: "EdgeMetadata") -> List[str]:
         """
         Validate edge metadata.
 
@@ -149,7 +153,8 @@ class DataIntegrityValidator:
         """
         errors = []
 
-        if not isinstance(metadata, EdgeMetadata):
+        # Use string comparison to avoid circular import
+        if metadata.__class__.__name__ != "EdgeMetadata":
             return ["Invalid metadata type"]
 
         dt_error = DataIntegrityValidator._validate_metadata_datetime(
@@ -170,7 +175,7 @@ class DataIntegrityValidator:
         return errors
 
     @staticmethod
-    def validate_node_integrity(node: Node) -> ValidationResult:
+    def validate_node_integrity(node: "Node") -> ValidationResult:
         """
         Validate node data integrity.
 
@@ -216,7 +221,7 @@ class DataIntegrityValidator:
             raise ValidationError(str(e))
 
     @staticmethod
-    def validate_edge_integrity(edge: Edge) -> ValidationResult:
+    def validate_edge_integrity(edge: "Edge") -> ValidationResult:
         """
         Validate edge data integrity.
 

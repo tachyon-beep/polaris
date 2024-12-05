@@ -88,7 +88,6 @@ class MetricsCalculator:
     PATH_METRICS_EXACT_THRESHOLD = 1000  # Use exact calculation for graphs smaller than this
     CLUSTERING_EXACT_THRESHOLD = 5000  # Use exact clustering for graphs smaller than this
     MIN_SAMPLE_SIZE = 100  # Minimum number of node pairs to sample
-    CONFIDENCE_THRESHOLD = 0.95  # Target confidence level for approximations
 
     @staticmethod
     def _calculate_basic_metrics(
@@ -155,7 +154,7 @@ class MetricsCalculator:
         coefficients = []
         for node in nodes:
             coefficient = ComponentAnalysis.calculate_clustering_coefficient(graph, node)
-            if coefficient is not None:
+            if coefficient is not None:  # Only include valid coefficients
                 coefficients.append(coefficient)
 
         return sum(coefficients) / len(coefficients) if coefficients else 0.0
@@ -172,32 +171,35 @@ class MetricsCalculator:
             sample_size (int): Number of nodes to sample
 
         Returns:
-            Tuple[float, float]: (clustering coefficient, confidence level)
+            Tuple[float, float]: (clustering coefficient, confidence)
         """
         if not nodes:
             return 0.0, 1.0
 
         # Sample nodes
         sample_nodes = random.sample(list(nodes), min(sample_size, len(nodes)))
-
-        coefficients = []
-        for node in sample_nodes:
-            coefficient = ComponentAnalysis.calculate_clustering_coefficient(graph, node)
-            if coefficient is not None:
-                coefficients.append(coefficient)
+        coefficients = [
+            coeff
+            for coeff in (
+                ComponentAnalysis.calculate_clustering_coefficient(graph, node)
+                for node in sample_nodes
+            )
+            if coeff is not None  # Only include valid coefficients
+        ]
 
         if not coefficients:
             return 0.0, 1.0
 
         # Calculate mean and confidence
         mean = sum(coefficients) / len(coefficients)
-        if len(coefficients) < 2:
-            return mean, 1.0
-
-        # Calculate confidence using standard error
-        std_dev = math.sqrt(sum((x - mean) ** 2 for x in coefficients) / (len(coefficients) - 1))
-        std_error = std_dev / math.sqrt(len(coefficients))
-        confidence = 1.0 - (2 * std_error)
+        if len(coefficients) > 1:
+            std_dev = math.sqrt(
+                sum((x - mean) ** 2 for x in coefficients) / (len(coefficients) - 1)
+            )
+            std_error = std_dev / math.sqrt(len(coefficients))
+            confidence = 1.0 - (2 * std_error)
+        else:
+            confidence = 1.0
 
         return mean, confidence
 

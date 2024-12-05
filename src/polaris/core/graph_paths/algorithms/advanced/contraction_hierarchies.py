@@ -44,7 +44,7 @@ class Shortcut:
     upper_edge: Edge
 
 
-class ContractionHierarchies(PathFinder):
+class ContractionHierarchies(PathFinder[PathResult]):
     """
     Contraction Hierarchies implementation for fast path queries.
 
