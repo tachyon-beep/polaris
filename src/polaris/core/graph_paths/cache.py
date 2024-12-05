@@ -21,8 +21,8 @@ Example:
 
 from typing import Any, Dict, Optional
 
-from polaris.infrastructure.cache import LRUCache
 from polaris.core.graph_paths.models import PathResult
+from polaris.infrastructure.cache import LRUCache
 
 # Constants
 PATH_CACHE_SIZE = 10000  # Maximum number of cached results

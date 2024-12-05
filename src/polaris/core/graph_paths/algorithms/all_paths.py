@@ -1,14 +1,14 @@
 """Implementation of algorithm to find all possible paths between nodes."""
 
-from typing import Optional, Iterator, Any, List, Set
 from time import time
+from typing import Any, Iterator, List, Optional, Set
 
-from polaris.core.models import Edge
 from polaris.core.exceptions import GraphOperationError
 from polaris.core.graph_paths.base import PathFinder
 from polaris.core.graph_paths.models import PathResult, PerformanceMetrics
-from polaris.core.graph_paths.types import WeightFunc, PathFilter
+from polaris.core.graph_paths.types import PathFilter, WeightFunc
 from polaris.core.graph_paths.utils import create_path_result, get_edge_weight
+from polaris.core.models import Edge
 
 
 class AllPathsFinder(PathFinder[PathResult]):

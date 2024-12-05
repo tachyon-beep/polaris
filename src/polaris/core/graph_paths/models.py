@@ -17,7 +17,7 @@ Example:
 """
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Union, Any
+from typing import Any, Dict, List, Optional, Union
 
 from polaris.core.graph import Graph
 from polaris.core.models import Edge

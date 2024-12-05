@@ -1,15 +1,15 @@
 from abc import ABC, abstractmethod
-from typing import Optional, Iterator, Any, Generic, TypeVar
+from typing import Any, Iterator, Optional, TypeVar
 
 from polaris.core.exceptions import NodeNotFoundError
-from polaris.core.graph_paths.types import WeightFunc, PathFilter
 from polaris.core.graph_paths.models import PathResult
+from polaris.core.graph_paths.types import PathFilter, WeightFunc
 
 # Type variable for path finding results
 T = TypeVar("T", bound=PathResult)
 
 
-class PathFinder(Generic[T], ABC):
+class PathFinder[T](ABC):
     """Abstract base class for path finding algorithms."""
 
     def __init__(self, graph: Any):

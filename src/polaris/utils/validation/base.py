@@ -30,9 +30,9 @@ from typing import (
     Tuple,
     Type,
     Union,
-    get_type_hints,
     get_args,
     get_origin,
+    get_type_hints,
 )
 
 

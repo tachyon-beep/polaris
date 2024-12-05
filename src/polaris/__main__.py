@@ -4,8 +4,9 @@ This module enables running Polaris directly using 'python -m polaris'.
 It provides a simple command router to different submodules.
 """
 
-import sys
 import asyncio
+import sys
+
 from . import cli
 
 

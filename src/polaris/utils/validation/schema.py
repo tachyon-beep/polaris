@@ -12,7 +12,7 @@ The schema validation system ensures that nodes and edges conform to
 their expected structure and data types as defined in JSON schemas.
 """
 
-from typing import Any, Dict, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict
 
 from jsonschema import ValidationError as JsonSchemaError
 from jsonschema import validate as json_validate

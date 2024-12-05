@@ -1,9 +1,9 @@
 """Graph metrics calculation functionality."""
 
+import math
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Set, Tuple, Any
-import math
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..models import Edge
 

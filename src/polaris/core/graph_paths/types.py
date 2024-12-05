@@ -1,8 +1,8 @@
 """Type definitions for graph path finding."""
 
 from enum import Enum
-from typing import Callable, List, Optional, Union
 from functools import wraps
+from typing import Callable, List, Optional, Union
 
 from polaris.core.models import Edge
 

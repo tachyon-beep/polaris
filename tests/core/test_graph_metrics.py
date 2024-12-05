@@ -1,9 +1,9 @@
 """Tests for graph metrics calculations."""
 
+from polaris.core.enums import RelationType
+from polaris.core.graph import Graph
 from polaris.core.graph_operations.metrics import MetricsCalculator
 from polaris.core.models import Edge, EdgeMetadata
-from polaris.core.graph import Graph
-from polaris.core.enums import RelationType
 
 
 def test_metrics_triangle_graph(sample_edge_metadata):

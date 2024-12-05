@@ -1,9 +1,9 @@
 """Path finding algorithm implementations."""
 
-from typing import List, Optional, Union, Iterator
+from typing import Iterator, List, Optional, Union
 
 from polaris.core.graph_paths.models import PathResult
-from polaris.core.graph_paths.types import WeightFunc, PathFilter
+from polaris.core.graph_paths.types import PathFilter, WeightFunc
 
 # Constants
 DEFAULT_MAX_PATH_LENGTH = 100

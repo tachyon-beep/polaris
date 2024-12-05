@@ -17,7 +17,7 @@ These validations help maintain data quality and consistency throughout the syst
 """
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from ...core.exceptions import ValidationError
 from .base import ValidationResult

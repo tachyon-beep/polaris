@@ -9,23 +9,23 @@ search using triangle inequality with precomputed landmarks. Key features:
 - Memory-efficient implementation
 """
 
-from dataclasses import dataclass
 import random
-from typing import Dict, List, Optional, Set, Tuple, Callable
-from heapq import heappush, heappop
+from dataclasses import dataclass
+from heapq import heappop, heappush
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from polaris.core.exceptions import GraphOperationError
-from polaris.core.models import Edge
 from polaris.core.graph import Graph
 from polaris.core.graph_paths.base import PathFinder
 from polaris.core.graph_paths.models import PathResult
 from polaris.core.graph_paths.utils import (
-    WeightFunc,
     MemoryManager,
-    get_edge_weight,
+    WeightFunc,
     create_path_result,
+    get_edge_weight,
     validate_path,
 )
+from polaris.core.models import Edge
 
 
 @dataclass(frozen=True)

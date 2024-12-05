@@ -9,15 +9,16 @@ These tests focus on edge cases, performance limits, and robustness:
 - Resource cleanup
 """
 
-import threading
-import time
-from datetime import datetime
-from typing import List, Optional, Set
-import pytest
-import random
 import gc
 import math
+import random
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from typing import List, Optional, Set
+
+import pytest
 
 from polaris.core.enums import RelationType
 from polaris.core.exceptions import GraphOperationError, NodeNotFoundError

@@ -5,14 +5,15 @@ This module provides comprehensive tests for the PathResult class,
 focusing on validation and edge cases.
 """
 
-import pytest
 from datetime import datetime
 from typing import List
 
+import pytest
+
 from polaris.core.enums import EntityType, RelationType
 from polaris.core.graph import Graph
-from polaris.core.models import Edge, EdgeMetadata, Node, NodeMetadata
 from polaris.core.graph_paths.models import PathResult, PathValidationError
+from polaris.core.models import Edge, EdgeMetadata, Node, NodeMetadata
 
 
 @pytest.fixture

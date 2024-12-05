@@ -1,9 +1,9 @@
 """Tests for graph component analysis."""
 
+from polaris.core.enums import RelationType
 from polaris.core.graph import Graph
 from polaris.core.graph_operations.components import ComponentAnalysis
 from polaris.core.models import Edge, EdgeMetadata
-from polaris.core.enums import RelationType
 
 
 def test_component_analysis(sample_edge_metadata):

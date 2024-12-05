@@ -1,8 +1,8 @@
 """Tests for graph traversal operations."""
 
+from polaris.core.enums import RelationType
 from polaris.core.graph_operations.components import ComponentAnalysis
 from polaris.core.models import Edge, EdgeMetadata
-from polaris.core.enums import RelationType
 
 
 def test_traversal_with_filter(sample_edge_metadata):

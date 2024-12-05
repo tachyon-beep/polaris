@@ -7,11 +7,12 @@ This module provides functionality for partitioning graphs:
 - Cross-partition edge analysis
 """
 
-from typing import Dict, List, NamedTuple, Set, Tuple, Optional
-from collections import defaultdict
 import random
-from ..models import Edge
+from collections import defaultdict
+from typing import Dict, List, NamedTuple, Optional, Set, Tuple
+
 from ..exceptions import GraphOperationError
+from ..models import Edge
 
 
 class PartitionMetrics(NamedTuple):

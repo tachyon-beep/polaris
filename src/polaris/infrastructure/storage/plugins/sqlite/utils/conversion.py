@@ -6,8 +6,8 @@ from typing import Any, Tuple
 
 from polaris.core.enums import EntityType, RelationType
 from polaris.core.models import Edge, EdgeMetadata, Node, NodeMetadata
-from polaris.infrastructure.storage.plugins.utils import deserialize_datetime
 from polaris.infrastructure.storage.plugins.sqlite.utils.persistence import row_to_tuple
+from polaris.infrastructure.storage.plugins.utils import deserialize_datetime
 
 
 def node_to_row(node: Node) -> Tuple:

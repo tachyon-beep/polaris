@@ -25,9 +25,9 @@ performance improvements through preprocessing and other advanced techniques:
    - Better than basic A* for sparse graphs
 """
 
+from .alt import ALTPathFinder
 from .contraction_hierarchies import ContractionHierarchies
 from .hub_labeling import HubLabels
 from .transit_node_routing import TransitNodeRouting
-from .alt import ALTPathFinder
 
 __all__ = ["ContractionHierarchies", "HubLabels", "TransitNodeRouting", "ALTPathFinder"]

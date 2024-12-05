@@ -1,8 +1,8 @@
 """Tests for subgraph extraction operations."""
 
+from polaris.core.enums import RelationType
 from polaris.core.graph_operations.subgraphs import SubgraphExtractor
 from polaris.core.models import Edge, EdgeMetadata, Node, NodeMetadata
-from polaris.core.enums import RelationType
 
 
 def test_extract_subgraph(sample_edge_metadata):

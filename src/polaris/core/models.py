@@ -19,8 +19,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from .enums import EntityType, RelationType
 from ..utils.validation import validate_dataclass
+from .enums import EntityType, RelationType
 
 
 @validate_dataclass

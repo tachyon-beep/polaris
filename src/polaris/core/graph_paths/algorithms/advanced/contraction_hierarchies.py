@@ -9,26 +9,25 @@ speedup technique for shortest path queries. Key features:
 - Memory-efficient path reconstruction
 """
 
-from dataclasses import dataclass
 import time
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List, Optional, Set, Tuple, Callable
-from heapq import heappush, heappop
+from heapq import heappop, heappush
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
-from polaris.core.exceptions import GraphOperationError
-from polaris.core.models import Edge, EdgeMetadata
-from polaris.core.graph import Graph
 from polaris.core.enums import RelationType
+from polaris.core.exceptions import GraphOperationError
+from polaris.core.graph import Graph
 from polaris.core.graph_paths.base import PathFinder
 from polaris.core.graph_paths.models import PathResult
 from polaris.core.graph_paths.utils import (
-    WeightFunc,
     MemoryManager,
-    get_edge_weight,
+    WeightFunc,
     create_path_result,
+    get_edge_weight,
     validate_path,
 )
-
+from polaris.core.models import Edge, EdgeMetadata
 
 # Use CONNECTS_TO temporarily for shortcuts
 SHORTCUT_TYPE = RelationType.CONNECTS_TO
@@ -101,7 +100,7 @@ class ContractionHierarchies(PathFinder[PathResult]):
 
         while pq:
             self.memory_manager.check_memory()
-            importance, node = heappop(pq)
+            _, node = heappop(pq)
 
             if node not in self.node_level:
                 # Contract node

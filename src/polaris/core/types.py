@@ -6,6 +6,7 @@ functionality to ensure type safety and clarity.
 """
 
 from typing import Optional, Protocol, Set
+
 from .models import Edge
 
 

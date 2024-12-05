@@ -1,9 +1,11 @@
 """Shared test fixtures."""
 
-import pytest
 from datetime import datetime
-from polaris.core.models import EdgeMetadata
+
+import pytest
+
 from polaris.core.enums import RelationType
+from polaris.core.models import EdgeMetadata
 
 
 @pytest.fixture
