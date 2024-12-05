@@ -71,13 +71,21 @@ class ContractionHierarchies(PathFinder[PathResult]):
         - Edge difference (shortcuts needed - original edges)
         - Number of contracted neighbors
         - Current level in hierarchy
+        - Node degree (in + out)
         """
-        edge_difference = self._count_shortcuts(node) - len(list(self.graph.get_neighbors(node)))
+        shortcuts_needed = self._count_shortcuts(node)
+        original_edges = len(list(self.graph.get_neighbors(node)))
         contracted_neighbors = len(self.contracted_neighbors.get(node, set()))
         level = self.node_level.get(node, 0)
 
-        # Combine factors with appropriate weights
-        return 5 * edge_difference + 3 * contracted_neighbors + 2 * level
+        # Calculate importance based on multiple factors
+        importance = (
+            5 * shortcuts_needed  # Weight the cost of adding shortcuts
+            + 2 * contracted_neighbors  # Consider neighborhood complexity
+            + level  # Preserve hierarchy levels
+            + original_edges  # Base importance on connectivity
+        )
+        return importance
 
     def preprocess(self) -> None:
         """
@@ -87,17 +95,17 @@ class ContractionHierarchies(PathFinder[PathResult]):
         adding shortcuts as necessary to preserve shortest paths.
         """
         # Calculate initial node ordering
-        node_importance = {
-            node: self._calculate_node_importance(node) for node in self.graph.get_nodes()
-        }
+        nodes = list(self.graph.get_nodes())
+        node_importance = {node: self._calculate_node_importance(node) for node in nodes}
         pq = [(importance, node) for node, importance in node_importance.items()]
 
         level = 0
-        total_nodes = len(self.graph.get_nodes())
+        total_nodes = len(nodes)
         last_progress = 0
         progress_interval = 5  # Show progress every 5%
         start_time = time.time()
 
+        # Contract nodes in order of increasing importance
         while pq:
             self.memory_manager.check_memory()
             _, node = heappop(pq)
@@ -107,6 +115,11 @@ class ContractionHierarchies(PathFinder[PathResult]):
                 shortcuts = self._contract_node(node)
                 self.node_level[node] = level
                 level += 1
+
+                # Debug: Print contracted node and shortcuts
+                print(
+                    f"Contracted node: {node}, Level: {self.node_level[node]}, Shortcuts added: {shortcuts}"
+                )
 
                 # Show progress
                 progress = (level / total_nodes) * 100
@@ -145,15 +158,16 @@ class ContractionHierarchies(PathFinder[PathResult]):
             List of (u, v) pairs where shortcuts were added
         """
         shortcuts = []
-        incoming = self.graph.get_neighbors(node, reverse=True)
-        outgoing = self.graph.get_neighbors(node)
+        incoming = sorted(
+            list(self.graph.get_neighbors(node, reverse=True))
+        )  # Sort for determinism
+        outgoing = sorted(list(self.graph.get_neighbors(node)))  # Sort for determinism
 
+        # Consider all pairs of incoming and outgoing edges
         for u in incoming:
-            if u in self.node_level:  # Skip already contracted nodes
-                continue
-
+            # Don't skip contracted nodes - we need to consider all paths
             for v in outgoing:
-                if v in self.node_level or u == v:
+                if u == v:  # Skip self-loops
                     continue
 
                 # Check if shortcut is necessary
@@ -162,14 +176,14 @@ class ContractionHierarchies(PathFinder[PathResult]):
                 if not lower_edge or not upper_edge:
                     continue
 
-                shortcut_weight = get_edge_weight(lower_edge) + get_edge_weight(upper_edge)
+                shortcut_weight = lower_edge.metadata.weight + upper_edge.metadata.weight
 
                 # Check if shortcut is necessary using witness search
                 if self._is_shortcut_necessary(u, v, node, shortcut_weight):
                     # Calculate impact score based on original edges
                     impact_score = min(lower_edge.impact_score, upper_edge.impact_score)
 
-                    # Create shortcut edge
+                    # Create shortcut edge with correct weight
                     now = datetime.now()
                     shortcut_edge = Edge(
                         from_entity=u,
@@ -182,7 +196,7 @@ class ContractionHierarchies(PathFinder[PathResult]):
                                 lower_edge.metadata.confidence, upper_edge.metadata.confidence
                             ),
                             source="contraction_hierarchies",
-                            weight=shortcut_weight,
+                            weight=shortcut_weight,  # Use sum of component weights
                         ),
                         impact_score=impact_score,
                         context=f"Shortcut via {node}",
@@ -215,26 +229,26 @@ class ContractionHierarchies(PathFinder[PathResult]):
         Returns:
             True if shortcut is necessary, False if witness path exists
         """
-        MAX_WITNESS_SEARCH_STEPS = 50  # Limit witness search
-
+        # Initialize distances and priority queue
         distances = {u: 0.0}
         pq = [(0.0, u)]
         visited = set()
-        steps = 0
 
-        while pq and steps < MAX_WITNESS_SEARCH_STEPS:
+        while pq:
             dist, node = heappop(pq)
 
             if node == v:
-                return dist >= shortcut_weight
+                # Found a witness path that's better than the shortcut
+                return dist > shortcut_weight - 1e-10  # Allow for floating point error
 
-            if node in visited:
+            if node in visited or node == via:  # Don't go through contracted node
                 continue
 
             visited.add(node)
-            steps += 1
 
-            for neighbor in self.graph.get_neighbors(node):
+            # Sort neighbors for deterministic behavior
+            neighbors = sorted(self.graph.get_neighbors(node))
+            for neighbor in neighbors:
                 if neighbor == via:  # Don't go through contracted node
                     continue
 
@@ -242,27 +256,36 @@ class ContractionHierarchies(PathFinder[PathResult]):
                 if not edge:
                     continue
 
-                new_dist = dist + get_edge_weight(edge)
-                if new_dist < shortcut_weight:  # Early termination
-                    if neighbor not in distances or new_dist < distances[neighbor]:
-                        distances[neighbor] = new_dist
-                        heappush(pq, (new_dist, neighbor))
+                new_dist = dist + edge.metadata.weight
+                if new_dist >= shortcut_weight + 1e-10:  # Early termination with epsilon
+                    continue
 
-        return True  # No witness path found
+                if neighbor not in distances or new_dist < distances[neighbor]:
+                    distances[neighbor] = new_dist
+                    heappush(pq, (new_dist, neighbor))
+
+        # No witness path found within weight limit
+        return True
 
     def _count_shortcuts(self, node: str) -> int:
         """Count number of shortcuts needed when contracting node."""
         shortcuts = set()
-        incoming = self.graph.get_neighbors(node, reverse=True)
-        outgoing = self.graph.get_neighbors(node)
+        incoming = sorted(
+            list(self.graph.get_neighbors(node, reverse=True))
+        )  # Sort for determinism
+        outgoing = sorted(list(self.graph.get_neighbors(node)))  # Sort for determinism
 
         for u in incoming:
-            if u in self.node_level:
-                continue
             for v in outgoing:
-                if v in self.node_level or u == v:
+                if u == v:
                     continue
-                shortcuts.add((u, v))
+                # Only count if shortcut would be necessary
+                lower_edge = self.graph.get_edge(u, node)
+                upper_edge = self.graph.get_edge(node, v)
+                if lower_edge and upper_edge:
+                    shortcut_weight = get_edge_weight(lower_edge) + get_edge_weight(upper_edge)
+                    if self._is_shortcut_necessary(u, v, node, shortcut_weight):
+                        shortcuts.add((u, v))
 
         return len(shortcuts)
 
@@ -300,6 +323,56 @@ class ContractionHierarchies(PathFinder[PathResult]):
 
         validate = kwargs.get("validate", True)
 
+        # Try all possible paths if filter is provided
+        if filter_func:
+            # First try direct path
+            try:
+                path = self._find_path(start_node, end_node, weight_func)
+                if filter_func(path):
+                    result = create_path_result(path, weight_func)
+                    if validate:
+                        validate_path(path, self.graph, weight_func, max_length)
+                    return result
+            except GraphOperationError:
+                pass
+
+            # Try alternative paths through different nodes
+            # Sort nodes for deterministic behavior
+            nodes = sorted(self.graph.get_nodes())
+            for node in nodes:
+                if node == start_node or node == end_node:
+                    continue
+                try:
+                    # Find path through this node
+                    path1 = self._find_path(start_node, node, weight_func)
+                    path2 = self._find_path(node, end_node, weight_func)
+                    path = path1 + path2
+                    if filter_func(path):
+                        result = create_path_result(path, weight_func)
+                        if validate:
+                            validate_path(path, self.graph, weight_func, max_length)
+                        return result
+                except GraphOperationError:
+                    continue
+
+            raise GraphOperationError(
+                f"No path satisfying filter exists between {start_node} and {end_node}"
+            )
+
+        # No filter, find shortest path
+        path = self._find_path(start_node, end_node, weight_func)
+        result = create_path_result(path, weight_func)
+        if validate:
+            validate_path(path, self.graph, weight_func, max_length)
+        return result
+
+    def _find_path(
+        self,
+        start_node: str,
+        end_node: str,
+        weight_func: Optional[WeightFunc],
+    ) -> List[Edge]:
+        """Find shortest path without filter."""
         # Initialize forward and backward searches
         forward_distances: Dict[str, float] = {start_node: 0.0}
         backward_distances: Dict[str, float] = {end_node: 0.0}
@@ -314,61 +387,142 @@ class ContractionHierarchies(PathFinder[PathResult]):
         best_dist = float("inf")
         meeting_node = None
 
+        # Track visited nodes to ensure we don't miss any paths
+        forward_visited = set()
+        backward_visited = set()
+
         # Bidirectional search
-        while forward_pq and backward_pq:
+        while forward_pq or backward_pq:
             self.memory_manager.check_memory()
 
-            if forward_pq[0][0] + backward_pq[0][0] >= best_dist:
-                break
-
             # Forward search
-            dist, node = heappop(forward_pq)
-            if node in backward_distances:
-                total_dist = dist + backward_distances[node]
-                if total_dist < best_dist:
-                    best_dist = total_dist
-                    meeting_node = node
+            if forward_pq:
+                dist, node = heappop(forward_pq)
+                if node in forward_visited:
+                    continue
 
-            self._expand_search(
-                node, dist, forward_distances, forward_predecessors, forward_pq, True, weight_func
-            )
+                forward_visited.add(node)
+
+                if node in backward_distances:
+                    total_dist = dist + backward_distances[node]
+                    if total_dist < best_dist:
+                        best_dist = total_dist
+                        meeting_node = node
+                        print(
+                            f"Meeting node found (forward): {meeting_node} with total_dist: {best_dist}"
+                        )
+
+                if dist <= best_dist:
+                    self._expand_search(
+                        node,
+                        dist,
+                        forward_distances,
+                        forward_predecessors,
+                        forward_pq,
+                        True,
+                        weight_func,
+                    )
 
             # Backward search
-            dist, node = heappop(backward_pq)
-            if node in forward_distances:
-                total_dist = dist + forward_distances[node]
-                if total_dist < best_dist:
-                    best_dist = total_dist
-                    meeting_node = node
+            if backward_pq:
+                dist, node = heappop(backward_pq)
+                if node in backward_visited:
+                    continue
 
-            self._expand_search(
-                node,
-                dist,
-                backward_distances,
-                backward_predecessors,
-                backward_pq,
-                False,
-                weight_func,
-            )
+                backward_visited.add(node)
+
+                if node in forward_distances:
+                    total_dist = dist + forward_distances[node]
+                    if total_dist < best_dist:
+                        best_dist = total_dist
+                        meeting_node = node
+                        print(
+                            f"Meeting node found (backward): {meeting_node} with total_dist: {best_dist}"
+                        )
+
+                if dist <= best_dist:
+                    self._expand_search(
+                        node,
+                        dist,
+                        backward_distances,
+                        backward_predecessors,
+                        backward_pq,
+                        False,
+                        weight_func,
+                    )
+
+            # Debug: Print current best_dist and meeting_node
+            print(f"Current best_dist: {best_dist}, Meeting node: {meeting_node}")
+
+            if (not forward_pq or forward_pq[0][0] >= best_dist) and (
+                not backward_pq or backward_pq[0][0] >= best_dist
+            ):
+                break
 
         if meeting_node is None:
             raise GraphOperationError(f"No path exists between {start_node} and {end_node}")
 
         # Reconstruct path
-        path = self._reconstruct_path(meeting_node, forward_predecessors, backward_predecessors)
+        forward_path = []
+        backward_path = []
 
-        # Apply filter if provided
-        if filter_func and not filter_func(path):
-            raise GraphOperationError(
-                f"No path satisfying filter exists between {start_node} and {end_node}"
-            )
+        # Forward path
+        current = meeting_node
+        while current in forward_predecessors:
+            prev, edge = forward_predecessors[current]
+            if edge.context and "Shortcut" in edge.context:
+                # Unpack shortcut
+                shortcut = self.shortcuts.get((prev, current))
+                if shortcut:
+                    forward_path.extend(reversed(self._unpack_shortcut(shortcut)))
+                else:
+                    print(f"Shortcut not found for edge: {prev} -> {current}")
+            else:
+                forward_path.append(edge)
+            current = prev
 
-        # Create and validate result
-        result = create_path_result(path, weight_func)
-        if validate:
-            validate_path(path, self.graph, weight_func, max_length)
+        # Backward path
+        current = meeting_node
+        while current in backward_predecessors:
+            next_node, edge = backward_predecessors[current]
+            if edge.context and "Shortcut" in edge.context:
+                # Unpack shortcut
+                shortcut = self.shortcuts.get((current, next_node))
+                if shortcut:
+                    backward_path.extend(self._unpack_shortcut(shortcut))
+                else:
+                    print(f"Shortcut not found for edge: {current} -> {next_node}")
+            else:
+                # Create forward edge from backward edge
+                backward_edge = edge
+                forward_edge = Edge(
+                    from_entity=backward_edge.to_entity,
+                    to_entity=backward_edge.from_entity,
+                    relation_type=backward_edge.relation_type,
+                    metadata=EdgeMetadata(
+                        created_at=backward_edge.metadata.created_at,
+                        last_modified=backward_edge.metadata.last_modified,
+                        confidence=backward_edge.metadata.confidence,
+                        source=backward_edge.metadata.source,
+                        weight=backward_edge.metadata.weight,
+                    ),
+                    impact_score=backward_edge.impact_score,
+                    context=backward_edge.context,
+                )
+                backward_path.append(forward_edge)
+            current = next_node
 
-        return result
+        # Combine paths in correct order
+        forward_path.reverse()  # Reverse to get correct order
+        path = forward_path + backward_path
+
+        # Debug: Print the reconstructed path and total weight
+        reconstructed_path = [f"{edge.from_entity}->{edge.to_entity}" for edge in path]
+        total_weight = sum(edge.metadata.weight for edge in path)
+        print(f"Reconstructed path: {reconstructed_path}")
+        print(f"Total weight: {total_weight}")
+
+        return path
 
     def _expand_search(
         self,
@@ -382,27 +536,76 @@ class ContractionHierarchies(PathFinder[PathResult]):
     ) -> None:
         """Expand search in one direction."""
         # Get neighbors including shortcuts
-        neighbors = set(self.graph.get_neighbors(node, reverse=not is_forward))
+        neighbors = set()
+        # Get regular neighbors
+        neighbors.update(self.graph.get_neighbors(node, reverse=not is_forward))
+        # Get shortcut neighbors
         if is_forward:
-            shortcuts = [(v, shortcut) for (u, v), shortcut in self.shortcuts.items() if u == node]
+            neighbors.update(v for (u, v), _ in self.shortcuts.items() if u == node)
         else:
-            shortcuts = [(u, shortcut) for (u, v), shortcut in self.shortcuts.items() if v == node]
+            neighbors.update(u for (u, v), _ in self.shortcuts.items() if v == node)
 
-        # Process regular edges and shortcuts
+        # Sort neighbors for deterministic behavior
+        neighbors = sorted(neighbors)
+
+        # Process all edges (regular and shortcuts)
         for neighbor in neighbors:
-            edge = self.graph.get_edge(
-                node if is_forward else neighbor, neighbor if is_forward else node
-            )
+            # Only expand to nodes of higher or equal level in the hierarchy
+            if neighbor in self.node_level and self.node_level[neighbor] < self.node_level[node]:
+                continue
+
+            # Try regular edge first
+            edge = None
+            if is_forward:
+                edge = self.graph.get_edge(node, neighbor)
+            else:
+                edge = self.graph.get_edge(neighbor, node)
+                if edge:
+                    # For backward search, create forward edge
+                    edge = Edge(
+                        from_entity=edge.to_entity,
+                        to_entity=edge.from_entity,
+                        relation_type=edge.relation_type,
+                        metadata=EdgeMetadata(
+                            created_at=edge.metadata.created_at,
+                            last_modified=edge.metadata.last_modified,
+                            confidence=edge.metadata.confidence,
+                            source=edge.metadata.source,
+                            weight=edge.metadata.weight,
+                        ),
+                        impact_score=edge.impact_score,
+                        context=edge.context,
+                    )
+
+            # If no regular edge, try shortcut
+            if not edge:
+                if is_forward:
+                    shortcut = self.shortcuts.get((node, neighbor))
+                    if shortcut:
+                        edge = shortcut.edge
+                else:
+                    shortcut = self.shortcuts.get((neighbor, node))
+                    if shortcut:
+                        # Create forward edge from backward shortcut
+                        edge = Edge(
+                            from_entity=shortcut.edge.to_entity,
+                            to_entity=shortcut.edge.from_entity,
+                            relation_type=shortcut.edge.relation_type,
+                            metadata=EdgeMetadata(
+                                created_at=shortcut.edge.metadata.created_at,
+                                last_modified=shortcut.edge.metadata.last_modified,
+                                confidence=shortcut.edge.metadata.confidence,
+                                source=shortcut.edge.metadata.source,
+                                weight=shortcut.edge.metadata.weight,
+                            ),
+                            impact_score=shortcut.edge.impact_score,
+                            context=shortcut.edge.context,
+                        )
+
             if edge:
                 self._process_edge(
                     node, neighbor, edge, dist, distances, predecessors, pq, weight_func
                 )
-
-        # Process shortcuts
-        for neighbor, shortcut in shortcuts:
-            self._process_edge(
-                node, neighbor, shortcut.edge, dist, distances, predecessors, pq, weight_func
-            )
 
     def _process_edge(
         self,
@@ -416,61 +619,28 @@ class ContractionHierarchies(PathFinder[PathResult]):
         weight_func: Optional[WeightFunc],
     ) -> None:
         """Process a single edge in the search."""
-        edge_weight = get_edge_weight(edge, weight_func)
+        edge_weight = get_edge_weight(edge, weight_func) if weight_func else edge.metadata.weight
         new_dist = dist + edge_weight
 
-        if neighbor not in distances or new_dist < distances[neighbor]:
+        # For equal distances, prefer lexicographically smaller paths
+        if (
+            neighbor not in distances
+            or new_dist < distances[neighbor]
+            or (
+                new_dist == distances[neighbor]
+                and edge.to_entity < predecessors[neighbor][1].to_entity
+            )
+        ):
             distances[neighbor] = new_dist
             predecessors[neighbor] = (node, edge)
             heappush(pq, (new_dist, neighbor))
-
-    def _reconstruct_path(
-        self,
-        meeting_node: str,
-        forward_predecessors: Dict[str, Tuple[str, Edge]],
-        backward_predecessors: Dict[str, Tuple[str, Edge]],
-    ) -> List[Edge]:
-        """
-        Reconstruct complete path from meeting point.
-
-        Handles path unpacking through shortcuts.
-        """
-        path = []
-
-        # Forward path
-        current = meeting_node
-        while current in forward_predecessors:
-            prev, edge = forward_predecessors[current]
-            if edge.relation_type == SHORTCUT_TYPE:
-                # Unpack shortcut
-                shortcut = self.shortcuts[(prev, current)]
-                path.extend(self._unpack_shortcut(shortcut))
-            else:
-                path.append(edge)
-            current = prev
-
-        path.reverse()
-
-        # Backward path
-        current = meeting_node
-        while current in backward_predecessors:
-            next_node, edge = backward_predecessors[current]
-            if edge.relation_type == SHORTCUT_TYPE:
-                # Unpack shortcut
-                shortcut = self.shortcuts[(current, next_node)]
-                path.extend(self._unpack_shortcut(shortcut))
-            else:
-                path.append(edge)
-            current = next_node
-
-        return path
 
     def _unpack_shortcut(self, shortcut: Shortcut) -> List[Edge]:
         """Recursively unpack a shortcut into its constituent edges."""
         path = []
 
         # Add lower edge (recursively unpack if it's a shortcut)
-        if shortcut.lower_edge.relation_type == SHORTCUT_TYPE:
+        if shortcut.lower_edge.context and "Shortcut" in shortcut.lower_edge.context:
             lower_shortcut = self.shortcuts[
                 (shortcut.lower_edge.from_entity, shortcut.lower_edge.to_entity)
             ]
@@ -479,7 +649,7 @@ class ContractionHierarchies(PathFinder[PathResult]):
             path.append(shortcut.lower_edge)
 
         # Add upper edge (recursively unpack if it's a shortcut)
-        if shortcut.upper_edge.relation_type == SHORTCUT_TYPE:
+        if shortcut.upper_edge.context and "Shortcut" in shortcut.upper_edge.context:
             upper_shortcut = self.shortcuts[
                 (shortcut.upper_edge.from_entity, shortcut.upper_edge.to_entity)
             ]

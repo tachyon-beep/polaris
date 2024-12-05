@@ -32,7 +32,7 @@ PATH_COST_EXCEEDED_MSG = "Path cost exceeded maximum value"
 def get_edge_weight(edge: Edge, weight_func: Optional[WeightFunc] = None) -> float:
     """Get weight of an edge using optional weight function."""
     if weight_func is None:
-        return 1.0
+        return edge.metadata.weight
 
     try:
         weight = weight_func(edge)
@@ -89,6 +89,9 @@ def create_path_result(
 ) -> PathResult:
     """Create PathResult from path."""
     total_weight = calculate_path_weight(path, weight_func)
+    # Debug: Print the path being created
+    reconstructed_path = [f"{e.from_entity}->{e.to_entity}" for e in path]
+    print(f"Creating PathResult with path: {reconstructed_path}, Total weight: {total_weight}")
     result = PathResult(path=path, total_weight=total_weight)
     if graph:
         validate_path(result.path, graph, weight_func)
