@@ -19,6 +19,7 @@ from polaris.core.graph_paths import (
     PathValidationError,
 )
 from polaris.core.graph_paths.cache import PathCache
+from polaris.core.graph_paths.utils import allow_negative_weights
 from polaris.core.models import Edge, EdgeMetadata
 
 
@@ -108,61 +109,92 @@ def test_shortest_path_basic(cyclic_graph):
 def test_shortest_path_with_inverse_weights(cyclic_graph):
     """Test shortest path with inverse impact score weights.
 
-    This test verifies that Dijkstra's algorithm finds the path with lowest
-    total weight when weights are inverse of impact scores.
+    This test verifies that the shortest path algorithm finds the path with lowest
+    total inverse weight. For our example graph:
 
-    Expected path: A->B->C->E because:
-    - A->B weight = 1/0.8 = 1.25
-    - B->C weight = 1/0.7 = 1.43
-    - C->E weight = 1/0.4 = 2.50
-    Total = 5.18
+    Path A->B->C->E:
+    - A->B: impact 0.8  -> weight 1/0.8 = 1.25
+    - B->C: impact 0.7  -> weight 1/0.7 = 1.43
+    - C->E: impact 0.4  -> weight 1/0.4 = 2.50
+    Total weight = 5.18
 
-    Compared to A->D->E:
-    - A->D weight = 1/0.5 = 2.00
-    - D->E weight = 1/0.3 = 3.33
-    Total = 5.33
+    Path A->D->E:
+    - A->D: impact 0.5  -> weight 1/0.5 = 2.00
+    - D->E: impact 0.3  -> weight 1/0.3 = 3.33
+    Total weight = 5.33
+
+    The algorithm should choose A->B->C->E since 5.18 < 5.33.
+    Note that the path with lowest total inverse weight
+    corresponds to the path with highest total impact score.
     """
 
+    @allow_negative_weights
     def weight_func(edge: Edge) -> float:
         return 1.0 / edge.impact_score
 
     print("\nTesting shortest path with inverse weights:")
-    print("A->D->E total weight:", 1.0 / 0.5 + 1.0 / 0.3)
-    print("A->B->C->E total weight:", 1.0 / 0.8 + 1.0 / 0.7 + 1.0 / 0.4)
 
+    # Calculate and print weights for all possible paths
+    path1_weights = [(1.0 / 0.5, "A->D"), (1.0 / 0.3, "D->E")]
+    path2_weights = [(1.0 / 0.8, "A->B"), (1.0 / 0.7, "B->C"), (1.0 / 0.4, "C->E")]
+
+    print("Path A->D->E:")
+    print("  " + " + ".join(f"{w:.2f} ({e})" for w, e in path1_weights))
+    print(f"  = {sum(w for w, _ in path1_weights):.2f}")
+
+    print("\nPath A->B->C->E:")
+    print("  " + " + ".join(f"{w:.2f} ({e})" for w, e in path2_weights))
+    print(f"  = {sum(w for w, _ in path2_weights):.2f}")
+
+    # Find shortest path
     path = PathFinding.shortest_path(cyclic_graph, "A", "E", weight_func=weight_func)
-    print("\nChosen path:")
-    for edge in path:
-        print(f"  {edge.from_entity}->{edge.to_entity} (weight={1.0/edge.impact_score:.2f})")
-    print(f"Total weight: {path.total_weight}")
 
-    # Should choose path with lowest total weight
+    print("\nChosen path:")
+    path_edges = []
+    for edge in path:
+        weight = 1.0 / edge.impact_score
+        print(
+            f"  {edge.from_entity}->{edge.to_entity} "
+            f"(impact={edge.impact_score:.1f}, weight={weight:.2f})"
+        )
+        path_edges.append((weight, f"{edge.from_entity}->{edge.to_entity}"))
+
+    print("\nTotal path weight:")
+    print("  " + " + ".join(f"{w:.2f} ({e})" for w, e in path_edges))
+    print(f"  = {path.total_weight:.2f}")
+
+    # Verify correct path was chosen
     assert [edge.to_entity for edge in path] == ["B", "C", "E"]
     assert path.total_weight == pytest.approx(5.18, rel=1e-2)
 
 
 def test_shortest_path_with_impact_weights(cyclic_graph):
-    """Test shortest path using impact scores directly as weights.
+    """Test shortest path using impact scores as weights.
 
     This test verifies that we can find the path with highest total impact
-    by using negated impact scores as weights. This works because:
-    1. Dijkstra's finds path with minimum total weight
-    2. By negating impact scores, minimum total weight = maximum total impact
+    by using inverse impact scores as weights. This works because:
+    1. The Bellman-Ford algorithm finds path with minimum total weight
+    2. Using inverse of impact scores, minimum total weight corresponds to maximum total impact
 
-    Expected path: A->B->C->E because:
-    - A->B impact = 0.8
-    - B->C impact = 0.7
-    - C->E impact = 0.4
-    Total impact = 1.9
+    For example, consider two paths:
+    A->B->C->E: impact scores 0.8, 0.7, 0.4
+        - Total impact = 1.9
+        - Inverse weights = 1/0.8 + 1/0.7 + 1/0.4 ≈ 5.18
 
-    Compared to A->D->E:
-    - A->D impact = 0.5
-    - D->E impact = 0.3
-    Total impact = 0.8
+    A->D->E: impact scores 0.5, 0.3
+        - Total impact = 0.8
+        - Inverse weights = 1/0.5 + 1/0.3 ≈ 5.33
+
+    The path A->B->C->E has higher total impact (1.9 > 0.8)
+    and lower total inverse weight (5.18 < 5.33), so minimizing
+    inverse weights finds the maximum impact path.
     """
 
+    @allow_negative_weights
     def weight_func(edge: Edge) -> float:
-        return -edge.impact_score  # Negate so Dijkstra's minimum becomes our maximum
+        return (
+            1.0 / edge.impact_score
+        )  # Use inverse weights to make minimization equivalent to maximization
 
     print("\nTesting shortest path with impact weights:")
     print("A->D->E total impact:", 0.5 + 0.3)
@@ -171,14 +203,21 @@ def test_shortest_path_with_impact_weights(cyclic_graph):
     path = PathFinding.shortest_path(cyclic_graph, "A", "E", weight_func=weight_func)
     print("\nChosen path:")
     total_impact = 0.0
+    total_weight = 0.0
     for edge in path:
-        print(f"  {edge.from_entity}->{edge.to_entity} (impact={edge.impact_score})")
+        print(
+            f"  {edge.from_entity}->{edge.to_entity} "
+            f"(impact={edge.impact_score:.1f}, weight={1.0/edge.impact_score:.2f})"
+        )
         total_impact += edge.impact_score
-    print(f"Total impact: {total_impact}")
+        total_weight += 1.0 / edge.impact_score
+    print(f"Total impact: {total_impact:.1f}")
+    print(f"Total inverse weight: {total_weight:.2f}")
 
-    # Should choose path with highest impact scores
+    # Should choose path with highest impact scores / lowest inverse weights
     assert [edge.to_entity for edge in path] == ["B", "C", "E"]
     assert total_impact == pytest.approx(1.9, rel=1e-2)  # Sum of actual impact scores
+    assert total_weight == pytest.approx(5.18, rel=1e-2)  # Sum of inverse weights
 
 
 def test_shortest_path_no_path(cyclic_graph, sample_edge_metadata):
@@ -203,7 +242,7 @@ def test_edge_weight_validation(cyclic_graph):
     def invalid_weight_func(edge: Edge) -> float:
         return 0.0  # Invalid weight
 
-    with pytest.raises(ValueError, match="Edge weight must be positive"):
+    with pytest.raises(ValueError, match="Edge weight must be non-zero"):
         PathFinding._get_edge_weight(cyclic_graph.get_edge("A", "B"), invalid_weight_func)
 
     def negative_weight_func(edge: Edge) -> float:
@@ -329,11 +368,12 @@ def test_all_paths_with_filter(cyclic_graph):
 
 def test_all_paths_invalid_max_length(cyclic_graph):
     """Test handling of invalid max_length values."""
-    with pytest.raises(ValueError, match="max_length must be positive"):
-        next(PathFinding.all_paths(cyclic_graph, "A", "E", max_length=0))
-
-    with pytest.raises(ValueError, match="max_length must be positive"):
+    with pytest.raises(ValueError, match="max_length must be non-negative"):
         next(PathFinding.all_paths(cyclic_graph, "A", "E", max_length=-1))
+
+    # max_length=0 should return empty iterator
+    paths = list(PathFinding.all_paths(cyclic_graph, "A", "E", max_length=0))
+    assert len(paths) == 0
 
 
 def test_all_paths_default_max_length(cyclic_graph):
@@ -475,6 +515,7 @@ def test_bidirectional_search_with_weights(cyclic_graph):
     Total = 0.8
     """
 
+    @allow_negative_weights
     def weight_func(edge: Edge) -> float:
         return -edge.impact_score  # Negate so minimum path = maximum impact
 

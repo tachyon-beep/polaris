@@ -1,18 +1,13 @@
-"""
-Bidirectional search implementation.
+"""Bidirectional search implementation."""
 
-This module provides an optimized bidirectional search implementation that
-explores from both start and end nodes simultaneously.
-"""
-
+from typing import Dict, List, Optional, Set, Tuple, Any
 from time import time
-from typing import Dict, List, Optional, Any, cast, Tuple
-from contextlib import contextmanager
 
-from ....core.exceptions import GraphOperationError
-from ....core.models import Edge
-from ..base import PathFinder, PathFilter, WeightFunc
-from ..models import PathResult, PerformanceMetrics, PathValidationError
+from ...exceptions import GraphOperationError
+from ...models import Edge
+from ..base import PathFinder
+from ..models import PathResult, PerformanceMetrics
+from ..types import WeightFunc, PathFilter
 from ..utils import (
     PriorityQueue,
     MemoryManager,
@@ -21,109 +16,32 @@ from ..utils import (
     get_edge_weight,
     validate_path,
     is_better_cost,
+    MAX_QUEUE_SIZE,
 )
 
-import logging
 
-logger = logging.getLogger(__name__)
-
-# Constants
-MAX_QUEUE_SIZE = 100000  # Maximum size for priority queues
-
-
-class BidirectionalPathFinder(PathFinder[PathResult]):
+class BidirectionalFinder(PathFinder[PathResult]):
     """
     Bidirectional search implementation.
 
-    Features:
-    - Simultaneous forward and backward search
-    - Memory-efficient path state tracking
-    - Early termination optimization
-    - Path validation and metrics
+    This implementation supports both positive and negative weights through the
+    allow_negative_weights decorator. When using negative weights (typically for
+    maximization problems), the algorithm will find the path with the minimum
+    total weight, which corresponds to the maximum value when weights are negated.
+
+    Example:
+        @allow_negative_weights
+        def weight_func(edge: Edge) -> float:
+            return -edge.impact_score  # Negate to find path with maximum impact
+
+        # Find path with maximum total impact score
+        path = PathFinding.bidirectional_search(graph, "A", "B", weight_func=weight_func)
     """
 
     def __init__(self, graph: Any, max_memory_mb: Optional[float] = None):
         """Initialize finder with optional memory limit."""
         super().__init__(graph)
         self.memory_manager = MemoryManager(max_memory_mb)
-
-    @contextmanager
-    def _search_context(self):
-        """Context manager for search state."""
-        try:
-            yield
-        finally:
-            self.memory_manager.reset_peak_memory()
-
-    def _expand_backward(
-        self,
-        node: str,
-        visited: Dict[str, PathState],
-        queue: PriorityQueue,
-        weight_func: Optional[WeightFunc],
-        best_cost: float,
-    ) -> None:
-        """Expand node in backward direction using incoming edges."""
-        current_state = visited[node]
-
-        # Get incoming edges using reverse neighbors
-        for incoming_node in self.graph.get_neighbors(node, reverse=True):
-            edge = self.graph.get_edge(incoming_node, node)
-            if not edge:
-                continue
-
-            try:
-                edge_weight = get_edge_weight(edge, weight_func)
-                new_cost = current_state.total_weight + edge_weight
-
-                # Only expand if new path is potentially better
-                if is_better_cost(new_cost, best_cost) and (
-                    incoming_node not in visited
-                    or is_better_cost(new_cost, visited[incoming_node].total_weight)
-                ):
-                    visited[incoming_node] = PathState(
-                        incoming_node, edge, current_state, current_state.depth + 1, new_cost
-                    )
-                    queue.add_or_update(incoming_node, new_cost)
-
-            except (ValueError, OverflowError) as e:
-                # Log but continue with other neighbors
-                continue
-
-    def _expand_forward(
-        self,
-        node: str,
-        visited: Dict[str, PathState],
-        queue: PriorityQueue,
-        weight_func: Optional[WeightFunc],
-        best_cost: float,
-    ) -> None:
-        """Expand node in forward direction using outgoing edges."""
-        current_state = visited[node]
-
-        # Get outgoing edges
-        for neighbor in self.graph.get_neighbors(node):
-            edge = self.graph.get_edge(node, neighbor)
-            if not edge:
-                continue
-
-            try:
-                edge_weight = get_edge_weight(edge, weight_func)
-                new_cost = current_state.total_weight + edge_weight
-
-                # Only expand if new path is potentially better
-                if is_better_cost(new_cost, best_cost) and (
-                    neighbor not in visited
-                    or is_better_cost(new_cost, visited[neighbor].total_weight)
-                ):
-                    visited[neighbor] = PathState(
-                        neighbor, edge, current_state, current_state.depth + 1, new_cost
-                    )
-                    queue.add_or_update(neighbor, new_cost)
-
-            except (ValueError, OverflowError) as e:
-                # Log but continue with other neighbors
-                continue
 
     def find_path(
         self,
@@ -134,160 +52,232 @@ class BidirectionalPathFinder(PathFinder[PathResult]):
         filter_func: Optional[PathFilter] = None,
         weight_func: Optional[WeightFunc] = None,
         **kwargs,
-    ) -> PathResult:
-        """Find shortest path using bidirectional search."""
+    ) -> Optional[PathResult]:
+        """Find path using bidirectional search."""
+        # Validate nodes exist
+        self.validate_nodes(start_node, end_node)
+
         metrics = PerformanceMetrics(operation="bidirectional", start_time=time())
         metrics.nodes_explored = 0
 
-        with self._search_context():
-            try:
-                self.validate_nodes(start_node, end_node)
+        try:
+            # Get max_depth from kwargs or max_length
+            max_depth = kwargs.get("max_depth", max_length)
+            if max_depth is not None:
+                if not isinstance(max_depth, int):
+                    raise TypeError("max_depth must be an integer")
+                if max_depth <= 0:
+                    raise ValueError("max_depth must be positive")
+                if max_depth == 1:
+                    # Special case: max_depth=1 means only direct edges allowed
+                    edge = self.graph.get_edge(start_node, end_node)
+                    if not edge:
+                        raise GraphOperationError(
+                            f"No path of length <= 1 exists between {start_node} and {end_node}"
+                        )
+                    return create_path_result([edge], weight_func)
 
-                # Early exit for same node
-                if start_node == end_node:
-                    return create_path_result([], weight_func)
+            # Forward search state
+            forward_queue = PriorityQueue(maxsize=MAX_QUEUE_SIZE)
+            forward_queue.add_or_update(start_node, 0.0)
+            forward_distances: Dict[str, float] = {start_node: 0.0}
+            forward_states: Dict[str, PathState] = {
+                start_node: PathState(start_node, None, None, 0, 0.0)
+            }
+            forward_explored: Set[str] = set()
 
-                # Handle max_length division safely
-                forward_depth_limit = (max_length // 2) if max_length is not None else None
-                backward_depth_limit = (
-                    (max_length - cast(int, forward_depth_limit))
-                    if max_length is not None
-                    else None
+            # Backward search state
+            backward_queue = PriorityQueue(maxsize=MAX_QUEUE_SIZE)
+            backward_queue.add_or_update(end_node, 0.0)
+            backward_distances: Dict[str, float] = {end_node: 0.0}
+            backward_states: Dict[str, PathState] = {
+                end_node: PathState(end_node, None, None, 0, 0.0)
+            }
+            backward_explored: Set[str] = set()
+
+            # Track best meeting point
+            best_total_dist = float("inf")
+            best_meeting_node = None
+            best_forward_state = None
+            best_backward_state = None
+
+            while not (forward_queue.empty() and backward_queue.empty()):
+                self.memory_manager.check_memory()
+                metrics.nodes_explored += 1
+
+                # Forward search step
+                if not forward_queue.empty():
+                    current = forward_queue.pop()
+                    if not current:
+                        continue
+                    current_dist, current_node = current
+                    if current_node in forward_explored:
+                        continue
+                    forward_explored.add(current_node)
+
+                    current_state = forward_states[current_node]
+
+                    # Check if we've found a better path
+                    if current_node in backward_distances:
+                        total_dist = current_dist + backward_distances[current_node]
+                        if is_better_cost(total_dist, best_total_dist):
+                            backward_state = backward_states[current_node]
+                            total_depth = current_state.depth + backward_state.depth
+                            if max_depth is None or total_depth <= max_depth:
+                                # Check for cycles in combined path
+                                forward_path = current_state.get_path()
+                                backward_path = backward_state.get_path()
+                                forward_nodes = (
+                                    {edge.from_entity for edge in forward_path}
+                                    | {forward_path[-1].to_entity}
+                                    if forward_path
+                                    else {start_node}
+                                )
+                                backward_nodes = (
+                                    {edge.from_entity for edge in backward_path}
+                                    | {backward_path[-1].to_entity}
+                                    if backward_path
+                                    else {end_node}
+                                )
+                                # Only check for overlap at meeting point
+                                if len(forward_nodes & backward_nodes) <= 1:
+                                    best_total_dist = total_dist
+                                    best_meeting_node = current_node
+                                    best_forward_state = current_state
+                                    best_backward_state = backward_state
+
+                    # Expand forward if within depth limit
+                    if max_depth is None or current_state.depth < max_depth:
+                        for neighbor in self.graph.get_neighbors(current_node):
+                            # Skip if neighbor would create a cycle in forward path
+                            if neighbor in current_state.get_visited():
+                                continue
+
+                            edge = self.graph.get_edge(current_node, neighbor)
+                            if not edge:
+                                continue
+
+                            try:
+                                edge_weight = get_edge_weight(edge, weight_func)
+                                new_dist = current_dist + edge_weight
+                                new_depth = current_state.depth + 1
+
+                                if neighbor not in forward_distances or is_better_cost(
+                                    new_dist, forward_distances[neighbor]
+                                ):
+                                    forward_distances[neighbor] = new_dist
+                                    forward_states[neighbor] = PathState(
+                                        neighbor, edge, current_state, new_depth, new_dist
+                                    )
+                                    forward_queue.add_or_update(neighbor, new_dist)
+                            except ValueError as e:
+                                if "Edge weight must be finite number" in str(e):
+                                    raise ValueError("Path cost exceeded maximum value")
+                                continue
+
+                # Backward search step
+                if not backward_queue.empty():
+                    current = backward_queue.pop()
+                    if not current:
+                        continue
+                    current_dist, current_node = current
+                    if current_node in backward_explored:
+                        continue
+                    backward_explored.add(current_node)
+
+                    current_state = backward_states[current_node]
+
+                    # Check if we've found a better path
+                    if current_node in forward_distances:
+                        total_dist = current_dist + forward_distances[current_node]
+                        if is_better_cost(total_dist, best_total_dist):
+                            forward_state = forward_states[current_node]
+                            total_depth = forward_state.depth + current_state.depth
+                            if max_depth is None or total_depth <= max_depth:
+                                # Check for cycles in combined path
+                                forward_path = forward_state.get_path()
+                                backward_path = current_state.get_path()
+                                forward_nodes = (
+                                    {edge.from_entity for edge in forward_path}
+                                    | {forward_path[-1].to_entity}
+                                    if forward_path
+                                    else {start_node}
+                                )
+                                backward_nodes = (
+                                    {edge.from_entity for edge in backward_path}
+                                    | {backward_path[-1].to_entity}
+                                    if backward_path
+                                    else {end_node}
+                                )
+                                # Only check for overlap at meeting point
+                                if len(forward_nodes & backward_nodes) <= 1:
+                                    best_total_dist = total_dist
+                                    best_meeting_node = current_node
+                                    best_forward_state = forward_state
+                                    best_backward_state = current_state
+
+                    # Expand backward if within depth limit
+                    if max_depth is None or current_state.depth < max_depth:
+                        for neighbor in self.graph.get_neighbors(current_node, reverse=True):
+                            # Skip if neighbor would create a cycle in backward path
+                            if neighbor in current_state.get_visited():
+                                continue
+
+                            edge = self.graph.get_edge(
+                                neighbor, current_node
+                            )  # Note: reversed edge
+                            if not edge:
+                                continue
+
+                            try:
+                                edge_weight = get_edge_weight(edge, weight_func)
+                                new_dist = current_dist + edge_weight
+                                new_depth = current_state.depth + 1
+
+                                if neighbor not in backward_distances or is_better_cost(
+                                    new_dist, backward_distances[neighbor]
+                                ):
+                                    backward_distances[neighbor] = new_dist
+                                    backward_states[neighbor] = PathState(
+                                        neighbor, edge, current_state, new_depth, new_dist
+                                    )
+                                    backward_queue.add_or_update(neighbor, new_dist)
+                            except ValueError as e:
+                                if "Edge weight must be finite number" in str(e):
+                                    raise ValueError("Path cost exceeded maximum value")
+                                continue
+
+            metrics.end_time = time()
+
+            if (
+                best_meeting_node is None
+                or best_forward_state is None
+                or best_backward_state is None
+            ):
+                raise GraphOperationError(f"No path exists between {start_node} and {end_node}")
+
+            # Reconstruct path
+            forward_path = best_forward_state.get_path()
+            backward_path = best_backward_state.get_path()
+            backward_path.reverse()
+
+            # Combine paths, removing duplicate meeting point edge if present
+            if forward_path and backward_path and forward_path[-1] == backward_path[0]:
+                backward_path = backward_path[1:]
+            path = forward_path + backward_path
+
+            # Check if path exceeds max_depth
+            if max_depth is not None and len(path) > max_depth:
+                raise GraphOperationError(
+                    f"No path of length <= {max_depth} exists between {start_node} and {end_node}"
                 )
 
-                forward_queue = PriorityQueue(maxsize=MAX_QUEUE_SIZE)
-                backward_queue = PriorityQueue(maxsize=MAX_QUEUE_SIZE)
-                forward_queue.add_or_update(start_node, 0.0)
-                backward_queue.add_or_update(end_node, 0.0)
+            # Apply filter if provided
+            if filter_func and not filter_func(path):
+                return None
 
-                forward_visited = {start_node: PathState(start_node, None, None, 0, 0.0)}
-                backward_visited = {end_node: PathState(end_node, None, None, 0, 0.0)}
+            return create_path_result(path, weight_func)
 
-                best_path = None
-                best_cost = float("inf")
-                meeting_node = None
-
-                while not (forward_queue.empty() or backward_queue.empty()):
-                    self.memory_manager.check_memory()
-                    metrics.nodes_explored += 1
-
-                    # Get current minimum costs
-                    forward_min = forward_queue.peek_priority()
-                    backward_min = backward_queue.peek_priority()
-
-                    # Strong termination condition
-                    if forward_min + backward_min >= best_cost:
-                        break
-
-                    # Expand the direction with lower current cost
-                    if forward_min <= backward_min:
-                        result = forward_queue.pop()
-                        if result is None:
-                            continue
-                        current_cost, current = result
-
-                        # Skip if we've found a better path
-                        if current_cost >= best_cost:
-                            continue
-
-                        # Check for intersection
-                        if current in backward_visited:
-                            total_cost = current_cost + backward_visited[current].total_weight
-                            if is_better_cost(total_cost, best_cost):
-                                forward_len = forward_visited[current].depth
-                                backward_len = backward_visited[current].depth
-                                if max_length is None or forward_len + backward_len <= max_length:
-                                    best_cost = total_cost
-                                    meeting_node = current
-
-                        # Expand forward within depth limit
-                        current_depth = forward_visited[current].depth
-                        if forward_depth_limit is None or current_depth < forward_depth_limit:
-                            self._expand_forward(
-                                current,
-                                forward_visited,
-                                forward_queue,
-                                weight_func,
-                                best_cost,
-                            )
-                    else:
-                        result = backward_queue.pop()
-                        if result is None:
-                            continue
-                        current_cost, current = result
-
-                        # Skip if we've found a better path
-                        if current_cost >= best_cost:
-                            continue
-
-                        # Check for intersection
-                        if current in forward_visited:
-                            total_cost = current_cost + forward_visited[current].total_weight
-                            if is_better_cost(total_cost, best_cost):
-                                forward_len = forward_visited[current].depth
-                                backward_len = backward_visited[current].depth
-                                if max_length is None or forward_len + backward_len <= max_length:
-                                    best_cost = total_cost
-                                    meeting_node = current
-
-                        # Expand backward within depth limit
-                        current_depth = backward_visited[current].depth
-                        if backward_depth_limit is None or current_depth < backward_depth_limit:
-                            self._expand_backward(
-                                current,
-                                backward_visited,
-                                backward_queue,
-                                weight_func,
-                                best_cost,
-                            )
-
-                if meeting_node is None:
-                    raise GraphOperationError(
-                        f"No path exists between '{start_node}' and '{end_node}'"
-                    )
-
-                # Reconstruct path
-                forward_path = self._reconstruct_forward_path(meeting_node, forward_visited)
-                backward_path = self._reconstruct_backward_path(meeting_node, backward_visited)
-                best_path = forward_path + list(reversed(backward_path))
-
-                # Validate final path
-                if max_length is not None and len(best_path) > max_length:
-                    raise GraphOperationError(f"No path of length <= {max_length} exists")
-
-                result = create_path_result(best_path, weight_func)
-                validate_path(best_path, self.graph, weight_func)
-                return result
-
-            finally:
-                metrics.end_time = time()
-                metrics.max_memory_used = int(self.memory_manager.peak_memory_mb * 1024 * 1024)
-
-    def _reconstruct_forward_path(
-        self, meeting_node: str, visited: Dict[str, PathState]
-    ) -> List[Edge]:
-        """Reconstruct the forward path."""
-        path: List[Edge] = []
-        state = visited.get(meeting_node)
-
-        while state is not None and state.prev_state is not None:
-            if state.prev_edge is not None:
-                path.append(state.prev_edge)
-            state = state.prev_state
-
-        path.reverse()
-        return path
-
-    def _reconstruct_backward_path(
-        self, meeting_node: str, visited: Dict[str, PathState]
-    ) -> List[Edge]:
-        """Reconstruct the backward path."""
-        path: List[Edge] = []
-        state = visited.get(meeting_node)
-
-        while state is not None and state.prev_state is not None:
-            if state.prev_edge is not None:
-                path.append(state.prev_edge)
-            state = state.prev_state
-
-        return path
+        finally:
+            # Clean up resources
+            self.memory_manager.reset_peak_memory()
