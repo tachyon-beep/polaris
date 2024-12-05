@@ -7,6 +7,7 @@ and path validation.
 
 import time
 from typing import Dict, List, Optional, Set, Protocol, Tuple, TYPE_CHECKING
+from collections import deque
 
 from polaris.core.graph.traversal.utils import get_edge_weight
 from polaris.core.graph.traversal.cache import PathCache
@@ -28,58 +29,110 @@ class GraphLike(Protocol):
     def get_edge(self, from_node: str, to_node: str) -> Optional[Edge]: ...
 
 
+def _compute_reachability_metrics(node: str, graph: GraphLike) -> Tuple[int, int, float]:
+    """
+    Compute reachability metrics for a node using BFS.
+
+    Args:
+        node: Node to analyze
+        graph: Graph instance
+
+    Returns:
+        Tuple of (forward_reach_count, backward_reach_count, avg_path_length)
+    """
+
+    def bfs_reach(start: str, reverse: bool = False) -> Tuple[int, float]:
+        visited = set([start])
+        queue = deque([(start, 0)])  # (node, distance)
+        total_dist = 0
+        reach_count = 0
+
+        while queue:
+            current, dist = queue.popleft()
+            reach_count += 1
+            total_dist += dist
+
+            for neighbor in graph.get_neighbors(current, reverse=reverse):
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append((neighbor, dist + 1))
+
+        avg_dist = total_dist / reach_count if reach_count > 0 else float("inf")
+        return reach_count, avg_dist
+
+    # Compute forward and backward reachability
+    forward_count, forward_avg_dist = bfs_reach(node, reverse=False)
+    backward_count, backward_avg_dist = bfs_reach(node, reverse=True)
+
+    # Average path length considers both directions
+    avg_path_length = (forward_avg_dist + backward_avg_dist) / 2
+
+    return forward_count, backward_count, avg_path_length
+
+
 def calculate_node_importance(
     node: str,
     graph: GraphLike,
-    hub_order: Dict[str, int],
+    hub_order: Dict[str, int],  # Kept for API compatibility but not used
 ) -> float:
     """
     Calculate importance of a node for hub selection.
 
-    Uses betweenness centrality approximation - nodes that connect
-    different parts of the graph are more important.
+    Uses a combination of metrics:
+    1. Reachability (how many nodes can be reached from/to this node)
+    2. Path centrality (how many shortest paths go through this node)
+    3. Average path length (shorter paths through node = more important)
 
     Args:
         node: Node to calculate importance for
         graph: Graph instance
-        hub_order: Map of node to ordering value
+        hub_order: Map of node to ordering value (kept for API compatibility)
 
     Returns:
         Importance score (higher means more important)
     """
-    # Get incoming and outgoing neighbors
+    # Get basic connectivity metrics
     in_neighbors = graph.get_neighbors(node, reverse=True)
     out_neighbors = graph.get_neighbors(node)
+    total_degree = len(in_neighbors) + len(out_neighbors)
 
-    # Calculate how many unique paths go through this node
-    paths_through = len(in_neighbors) * len(out_neighbors)
+    # Early exit for isolated nodes
+    if total_degree == 0:
+        return 0.0
 
-    # Add degree centrality as a secondary factor
-    degree = len(in_neighbors) + len(out_neighbors)
+    # Compute reachability metrics
+    forward_reach, backward_reach, avg_path_length = _compute_reachability_metrics(node, graph)
 
-    # Get current ordering level (default to 0 if not set)
-    level = hub_order.get(node, 0)
+    # Calculate path coverage score
+    # Higher score for nodes that can reach many other nodes in both directions
+    coverage_score = (forward_reach * backward_reach) / (avg_path_length + 1)
 
-    # Calculate distance from center of graph
-    total_dist = 0
-    min_weight = float("inf")
-    max_weight = 0.0
-    for neighbor in in_neighbors | out_neighbors:
-        edge = graph.get_edge(node, neighbor) or graph.get_edge(neighbor, node)
-        if edge:
-            weight = get_edge_weight(edge)
-            total_dist += weight
-            min_weight = min(min_weight, weight)
-            max_weight = max(max_weight, weight)
-    avg_dist = total_dist / degree if degree > 0 else float("inf")
+    # Calculate centrality score based on potential paths through node
+    centrality_score = len(in_neighbors) * len(out_neighbors)
 
-    # For chain graphs, make middle nodes more important
-    if degree <= 2:  # Node is part of a chain
-        # Boost importance based on number of paths through node
-        return paths_through + 0.1 * degree + level
+    # Detect if node is part of a chain
+    is_chain_node = total_degree <= 2
+
+    if is_chain_node:
+        # For chain nodes, prioritize central positions
+        # Nodes with balanced forward/backward reach are more central
+        balance_ratio = min(forward_reach, backward_reach) / max(forward_reach, backward_reach)
+        chain_score = balance_ratio * coverage_score
+        return chain_score
     else:
-        # For other graphs, use betweenness centrality approximation
-        return (1.0 / (avg_dist + 1)) * paths_through + 0.1 * degree + level
+        # For non-chain nodes, combine metrics with appropriate weights
+        # Coverage is most important, followed by centrality
+        importance = (
+            0.6 * coverage_score  # Path coverage
+            + 0.3 * centrality_score / total_degree  # Normalized centrality
+            + 0.1 * (forward_reach + backward_reach)  # Total reachability
+        )
+
+        # Penalize leaf nodes (degree 1) as they make poor hubs
+        if total_degree == 1:
+            importance *= 0.1
+
+        return importance
 
 
 def should_prune_label(
@@ -91,8 +144,9 @@ def should_prune_label(
     """
     Check if a label can be pruned.
 
-    A label can be pruned if the distance can be computed using
-    existing labels through a more important (lower ordered) hub.
+    A label can be pruned if:
+    1. A shorter path exists through a more important hub
+    2. The label is redundant for path coverage
 
     Args:
         source: Source node
@@ -103,16 +157,16 @@ def should_prune_label(
     Returns:
         True if label can be pruned, False otherwise
     """
-    # Never prune self labels or direct edges
+    # Never prune self labels
     if source == hub:
         return False
 
-    # Check if we can reach through more important hubs
-    min_dist = float("inf")
+    # Get existing labels
     forward_labels = state.get_forward_labels(source)
     backward_labels = state.get_backward_labels(hub)
 
-    # Try all possible paths through more important hubs
+    # Check paths through more important hubs
+    min_dist = float("inf")
     for label in forward_labels.labels:
         # Only consider more important hubs
         if state.get_hub_order(label.hub) < state.get_hub_order(hub):
@@ -121,10 +175,11 @@ def should_prune_label(
             if hub_to_target is not None:
                 min_dist = min(min_dist, label.distance + hub_to_target)
 
-    # Be less aggressive about pruning to maintain connectivity
+    # Prune if we have a significantly better path
+    # Use a smaller threshold (0.95) to be more aggressive about pruning
     if min_dist < float("inf"):
-        # Only prune if significantly better path exists
-        return min_dist < distance * 0.9  # Allow some slack for path diversity
+        return min_dist < distance * 0.95
+
     return False
 
 

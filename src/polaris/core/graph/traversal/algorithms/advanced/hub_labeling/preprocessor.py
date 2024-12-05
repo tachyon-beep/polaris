@@ -7,6 +7,7 @@ which computes distance labels for each node in the graph.
 
 import time
 from typing import Dict, List, Optional, Set, TYPE_CHECKING
+from collections import defaultdict
 
 from polaris.core.graph.traversal.utils import get_edge_weight
 from polaris.core.models import Edge
@@ -109,29 +110,25 @@ class HubLabelPreprocessor:
         Returns:
             Map of node to order value (lower = more important)
         """
+        # Detect graph topology
+        is_chain = self._is_chain_graph()
+        is_complete = self._is_complete_graph()
+
         # Calculate importance scores
         scores: Dict[str, float] = {}
         for node in self.graph.get_nodes():
-            # Add degree penalty to reduce label count
-            base_score = calculate_node_importance(node, self.graph, {})
-            in_degree = len(self.graph.get_neighbors(node, reverse=True))
-            out_degree = len(self.graph.get_neighbors(node))
-            degree_penalty = (in_degree + out_degree) * 0.1
-            scores[node] = base_score - degree_penalty
+            scores[node] = calculate_node_importance(node, self.graph, {})
 
         if verbose:
             print("\nImportance scores:")
             for node, score in sorted(scores.items(), key=lambda x: x[1], reverse=True):
                 print(f"  {node}: {score}")
 
-        # For chain graphs, make middle nodes more important
-        if self._is_chain_graph():
-            nodes = list(self.graph.get_nodes())
-            middle_idx = len(nodes) // 2
-            for i, node in enumerate(nodes):
-                # Boost importance of nodes near the middle
-                dist_from_middle = abs(i - middle_idx)
-                scores[node] = scores[node] + 2.0 / (dist_from_middle + 1)
+        # Apply topology-specific adjustments
+        if is_chain:
+            self._adjust_chain_scores(scores)
+        elif is_complete:
+            self._adjust_complete_scores(scores)
 
         # Assign order numbers (0 = most important)
         hub_order = {
@@ -150,27 +147,116 @@ class HubLabelPreprocessor:
         """
         Check if graph is a simple chain.
 
+        A chain graph has exactly two endpoints (degree 1) and all other
+        nodes have exactly two neighbors.
+
         Returns:
             True if graph is a chain, False otherwise
         """
-        # Count incoming and outgoing edges for each node
-        in_degree: Dict[str, int] = {}
-        out_degree: Dict[str, int] = {}
+        # Count degree for each node
+        degree_count = defaultdict(int)
         for node in self.graph.get_nodes():
             in_edges = self.graph.get_neighbors(node, reverse=True)
             out_edges = self.graph.get_neighbors(node)
-            in_degree[node] = len(in_edges)
-            out_degree[node] = len(out_edges)
+            degree = len(in_edges) + len(out_edges)
+            degree_count[degree] += 1
 
-        # Chain has exactly one incoming and one outgoing edge
-        # except for start (0 in) and end (0 out) nodes
-        num_start = sum(1 for d in in_degree.values() if d == 0)
-        num_end = sum(1 for d in out_degree.values() if d == 0)
-        num_middle = sum(
-            1 for node in self.graph.get_nodes() if in_degree[node] == 1 and out_degree[node] == 1
+        # Chain has exactly:
+        # - Two endpoints (degree 1)
+        # - All other nodes have degree 2
+        return (
+            len(self.graph.get_nodes()) >= 2
+            and degree_count[1] == 2
+            and degree_count[2] == len(self.graph.get_nodes()) - 2
+            and sum(degree_count.values()) == len(self.graph.get_nodes())
         )
 
-        return num_start == 1 and num_end == 1 and num_middle == len(self.graph.get_nodes()) - 2
+    def _is_complete_graph(self) -> bool:
+        """
+        Check if graph is complete.
+
+        A complete graph has edges between every pair of nodes.
+
+        Returns:
+            True if graph is complete, False otherwise
+        """
+        nodes = list(self.graph.get_nodes())
+        n = len(nodes)
+        if n <= 1:
+            return True
+
+        # Check each pair of nodes
+        for i in range(n):
+            for j in range(i + 1, n):
+                if not (
+                    self.graph.get_edge(nodes[i], nodes[j])
+                    or self.graph.get_edge(nodes[j], nodes[i])
+                ):
+                    return False
+        return True
+
+    def _adjust_chain_scores(self, scores: Dict[str, float]) -> None:
+        """
+        Adjust importance scores for chain graph.
+
+        Boosts scores of central nodes to ensure good path coverage.
+
+        Args:
+            scores: Map of node to importance score
+        """
+        # Find endpoints
+        endpoints = [
+            node
+            for node in self.graph.get_nodes()
+            if len(self.graph.get_neighbors(node))
+            + len(self.graph.get_neighbors(node, reverse=True))
+            == 1
+        ]
+        if len(endpoints) != 2:
+            return
+
+        # Find path between endpoints
+        path = []
+        current = endpoints[0]
+        visited = {current}
+        while current != endpoints[1]:
+            neighbors = (
+                self.graph.get_neighbors(current) | self.graph.get_neighbors(current, reverse=True)
+            ) - visited
+            if not neighbors:
+                return
+            current = next(iter(neighbors))
+            visited.add(current)
+            path.append(current)
+
+        # Boost scores based on distance from endpoints
+        n = len(path)
+        for i, node in enumerate(path):
+            # Nodes closer to middle get higher boost
+            dist_from_middle = abs(i - n // 2)
+            boost = 1.0 / (dist_from_middle + 1)
+            scores[node] = scores[node] * (1 + boost)
+
+    def _adjust_complete_scores(self, scores: Dict[str, float]) -> None:
+        """
+        Adjust importance scores for complete graph.
+
+        Ensures minimal hub set while maintaining path coverage.
+
+        Args:
+            scores: Map of node to importance score
+        """
+        n = len(self.graph.get_nodes())
+        if n <= 2:
+            return
+
+        # For complete graphs, we only need O(sqrt(n)) hubs
+        # Boost top sqrt(n) nodes to ensure they become hubs
+        top_k = int((n**0.5) + 0.5)  # Round up
+        top_nodes = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)[:top_k]
+
+        for node in top_nodes:
+            scores[node] *= 2.0  # Double importance of potential hubs
 
     def _compute_forward_labels(
         self,
