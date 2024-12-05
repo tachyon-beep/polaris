@@ -113,7 +113,7 @@ class ContractionHierarchies(PathFinder[PathResult]):
                 if progress - last_progress >= progress_interval:
                     elapsed = time.time() - start_time
                     remaining = (elapsed / level) * (total_nodes - level)
-                    print(f"Preprocessing: {progress:.1f}% complete, " f"ETA: {remaining:.1f}s")
+                    print(f"Preprocessing: {progress:.1f}% complete, ETA: {remaining:.1f}s")
                     last_progress = progress
 
                 # Update importance of affected nodes
