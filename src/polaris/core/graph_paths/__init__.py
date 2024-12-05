@@ -12,6 +12,7 @@ graph paths, including:
 from typing import Callable, Iterator, List, Optional, Union, cast
 
 from ..graph import Graph
+from ..exceptions import GraphOperationError
 from ..models import Edge
 from .algorithms.all_paths import AllPathsFinder
 from .algorithms.bidirectional import BidirectionalPathFinder
@@ -63,7 +64,7 @@ class PathFinding:
     def _validate_length(max_length: Optional[int]) -> None:
         """Validate max_length parameter."""
         if max_length is not None and max_length <= 0:
-            raise ValueError(f"max_length must be positive, got {max_length}")
+            raise GraphOperationError(f"No path of length <= {max_length} exists")
 
     @staticmethod
     def _validate_max_paths(max_paths: Optional[int]) -> None:

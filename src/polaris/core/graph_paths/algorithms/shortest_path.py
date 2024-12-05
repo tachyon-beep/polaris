@@ -98,6 +98,8 @@ class ShortestPathFinder(PathFinder[PathResult]):
                                     f"{edge.from_entity} -> {edge.to_entity}"
                                 )
                         except ValueError as e:
+                            if "Edge weight must be finite number" in str(e):
+                                raise ValueError("Path cost exceeded maximum value")
                             raise NegativeWeightError(str(e))
 
                 # Choose algorithm
