@@ -9,9 +9,10 @@ while maintaining thread safety.
 from contextlib import contextmanager
 from copy import deepcopy
 from threading import RLock
-from typing import Generator, Optional
+from typing import Generator, List, Optional, Set
 
 from .base import BaseGraph
+from ..models.edge import Edge
 
 
 class GraphStateManager:
@@ -144,44 +145,34 @@ class GraphStateView:
         """
         self._state_manager = state_manager
 
-    def get_snapshot(self) -> BaseGraph:
-        """
-        Get a snapshot of the current graph state.
+    def get_nodes(self) -> List[str]:
+        """Get all nodes in the graph."""
+        return list(self._state_manager._graph.get_nodes())
 
-        Returns:
-            BaseGraph: Deep copy of current graph state
-        """
-        return self._state_manager.get_state_snapshot()
+    def get_neighbors(self, node: str, reverse: bool = False) -> List[str]:
+        """Get all neighbors of a node."""
+        return list(self._state_manager._graph.get_neighbors(node, reverse))
 
-    def __getattr__(self, name: str):
-        """
-        Delegate read-only operations to the underlying graph.
+    def get_edge(self, from_node: str, to_node: str) -> Optional[Edge]:
+        """Get the edge between two nodes if it exists."""
+        return self._state_manager._graph.get_edge(from_node, to_node)
 
-        Args:
-            name (str): Name of the attribute to access
+    def get_edge_count(self) -> int:
+        """Get the total number of edges in the graph."""
+        return self._state_manager._graph.get_edge_count()
 
-        Returns:
-            Any: Result of the operation
+    def has_node(self, node: str) -> bool:
+        """Check if a node exists in the graph."""
+        return self._state_manager._graph.has_node(node)
 
-        Raises:
-            AttributeError: If the operation doesn't exist
-            StateAccessError: If attempting to access a mutating operation
-        """
-        # List of known read-only operations
-        read_only_ops = {
-            "get_nodes",
-            "get_edges",
-            "get_edge_count",
-            "has_node",
-            "has_edge",
-            "get_edge",
-            "get_neighbors",
-            "get_degree",
-            "get_incoming_edges",
-        }
+    def has_edge(self, from_node: str, to_node: str) -> bool:
+        """Check if an edge exists between two nodes."""
+        return self._state_manager._graph.has_edge(from_node, to_node)
 
-        if name not in read_only_ops:
-            raise StateAccessError(f"Operation '{name}' not allowed in read-only view")
+    def get_degree(self, node: str, reverse: bool = False) -> int:
+        """Get the degree (number of edges) of a node."""
+        return self._state_manager._graph.get_degree(node, reverse)
 
-        graph = self._state_manager.get_state_snapshot()
-        return getattr(graph, name)
+    def get_incoming_edges(self, node: str) -> Set[Edge]:
+        """Get all incoming edges for a node."""
+        return self._state_manager._graph.get_incoming_edges(node)
