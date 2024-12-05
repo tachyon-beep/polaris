@@ -38,6 +38,10 @@ class HubLabelPreprocessor:
             graph: Graph to preprocess
             storage: Optional storage for persisting labels
         """
+
+        if not graph or not graph.get_nodes():
+            raise ValueError("Graph cannot be empty")
+
         self.graph = graph
         self.storage = storage
         self.state = HubLabelState()
@@ -240,8 +244,8 @@ class HubLabelPreprocessor:
 
         # Try paths through existing hubs
         for source in hub_order:
-            if hub_order[source] >= hub_order[node]:
-                continue  # Only consider less important nodes
+            if hub_order[source] <= hub_order[node]:
+                continue  # Only consider more important nodes
 
             # Check direct edge
             edge = self.graph.get_edge(source, node)

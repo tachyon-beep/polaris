@@ -60,7 +60,7 @@ class Shortcut:
         impact_score = min(lower_edge.impact_score, upper_edge.impact_score)
         now = datetime.now()
 
-        # Create shortcut edge
+        # Create shortcut edge with more explicit context
         shortcut_edge = Edge(
             from_entity=from_node,
             to_entity=to_node,
@@ -74,9 +74,17 @@ class Shortcut:
                 ),
                 source="contraction_hierarchies",
                 weight=shortcut_weight,
+                custom_attributes={
+                    "original_lower_edge": lower_edge.to_entity,
+                    "original_upper_edge": upper_edge.to_entity,
+                },
             ),
             impact_score=impact_score,
-            context=f"Shortcut via {via_node}",
+            context=f"Shortcut via {via_node}",  # Keep this for backwards compatibility
+            attributes={
+                "via_node": via_node,  # Add redundant but explicit via_node
+                "path_type": "shortcut",  # Mark explicitly as shortcut
+            },
         )
 
         return cls(
