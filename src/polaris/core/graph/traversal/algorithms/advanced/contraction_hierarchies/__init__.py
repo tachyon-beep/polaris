@@ -1,68 +1,60 @@
 """
-Contraction Hierarchies implementation for fast path queries.
+Contraction Hierarchies implementation.
 
-This module provides an implementation of Contraction Hierarchies, a preprocessing-based
-speedup technique for shortest path queries.
+This module provides the main interface for the Contraction Hierarchies
+algorithm, including preprocessing and path finding functionality.
 """
 
-from typing import Callable, List, Optional, TYPE_CHECKING
+from typing import List, Optional, Callable, TYPE_CHECKING
 
-from polaris.core.exceptions import GraphOperationError
-from polaris.core.graph.traversal.base import PathFinder
 from polaris.core.graph.traversal.path_models import PathResult
 from polaris.core.graph.traversal.utils import WeightFunc
 from polaris.core.models import Edge
+from .finder import ContractionPathFinder
 from .models import ContractionState
 from .preprocessor import ContractionPreprocessor
-from .finder import ContractionPathFinder
 from .storage import ContractionStorage
 
 if TYPE_CHECKING:
     from polaris.core.graph import Graph
 
 
-class ContractionHierarchies(PathFinder[PathResult]):
+class ContractionHierarchies:
     """
-    Contraction Hierarchies implementation for fast path queries.
+    Contraction Hierarchies implementation.
 
-    Features:
-    - Preprocessing-based speedup technique
-    - Efficient shortcut creation
-    - Witness path search optimization
-    - Memory-efficient path reconstruction
+    This class provides the main interface for using Contraction Hierarchies,
+    including preprocessing the graph and finding shortest paths.
     """
 
-    def __init__(self, graph: "Graph", max_memory_mb: Optional[float] = None):
-        """Initialize with graph and optional memory limit."""
-        super().__init__(graph)
-        self.storage = ContractionStorage(max_memory_mb)
-        self._state: Optional[ContractionState] = None
-        self._preprocessed = False
+    def __init__(self, graph: "Graph"):
+        """
+        Initialize Contraction Hierarchies.
+
+        Args:
+            graph: Graph to build hierarchy on
+        """
+        self.graph = graph
+        self.storage = ContractionStorage()
+        self._state = None
 
     @property
     def state(self) -> ContractionState:
-        """Get algorithm state, raising error if not preprocessed."""
-        if not self._preprocessed or self._state is None:
-            raise GraphOperationError("Graph must be preprocessed before accessing state")
+        """Get current algorithm state."""
+        if self._state is None:
+            raise RuntimeError("Graph not preprocessed")
         return self._state
 
     def preprocess(self) -> None:
-        """
-        Preprocess graph to build contraction hierarchy.
-
-        This builds a hierarchy by contracting nodes in order of importance,
-        adding shortcuts as necessary to preserve shortest paths.
-        """
+        """Preprocess graph to build contraction hierarchy."""
         preprocessor = ContractionPreprocessor(self.graph, self.storage)
         self._state = preprocessor.preprocess()
-        self._preprocessed = True
 
     def find_path(
         self,
         start_node: str,
         end_node: str,
         max_length: Optional[int] = None,
-        max_paths: Optional[int] = None,
         filter_func: Optional[Callable[[List[Edge]], bool]] = None,
         weight_func: Optional[WeightFunc] = None,
         **kwargs,
@@ -74,27 +66,25 @@ class ContractionHierarchies(PathFinder[PathResult]):
             start_node: Starting node ID
             end_node: Target node ID
             max_length: Maximum path length
-            max_paths: Not used (always returns single path)
             filter_func: Optional path filter
             weight_func: Optional weight function
             **kwargs: Additional options:
                 validate: Whether to validate result (default: True)
+                allow_cycles: Whether to allow cycles in path (default: True)
 
         Returns:
             PathResult containing shortest path
 
         Raises:
-            GraphOperationError: If no path exists or graph not preprocessed
+            GraphOperationError: If no path exists
         """
-        if not self._preprocessed or self._state is None:
-            raise GraphOperationError("Graph must be preprocessed before finding paths")
-
-        finder = ContractionPathFinder(self.graph, self._state, self.storage)
+        finder = ContractionPathFinder(self.graph, self.state, self.storage)
         return finder.find_path(
-            start_node,
-            end_node,
+            start_node=start_node,
+            end_node=end_node,
             max_length=max_length,
             filter_func=filter_func,
             weight_func=weight_func,
-            **kwargs,
+            allow_cycles=kwargs.get("allow_cycles", True),  # Default to allowing cycles
+            validate=kwargs.get("validate", True),
         )

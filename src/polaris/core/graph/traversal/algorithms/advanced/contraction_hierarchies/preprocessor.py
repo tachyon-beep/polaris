@@ -6,6 +6,7 @@ including node ordering and shortcut creation.
 """
 
 import time
+import logging
 from heapq import heappop, heappush
 from typing import Dict, List, Set, Tuple, TYPE_CHECKING
 
@@ -16,6 +17,9 @@ from .utils import calculate_node_importance, is_shortcut_necessary
 
 if TYPE_CHECKING:
     from polaris.core.graph import Graph
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 
 class ContractionPreprocessor:
@@ -48,10 +52,13 @@ class ContractionPreprocessor:
             Preprocessed ContractionState
         """
         print("Starting preprocessing...")
+        logger.debug("Starting preprocessing...")
         start_time = time.time()
 
         # Calculate initial node ordering
         nodes = list(self.graph.get_nodes())
+        logger.debug(f"Initial nodes: {nodes}")
+
         node_importance = {
             node: calculate_node_importance(
                 node,
@@ -62,6 +69,8 @@ class ContractionPreprocessor:
             )
             for node in nodes
         }
+        logger.debug(f"Initial node importance: {node_importance}")
+
         pq = [(importance, node) for node, importance in node_importance.items()]
 
         level = 0
@@ -81,17 +90,19 @@ class ContractionPreprocessor:
                 level += 1
 
                 # Debug: Print contracted node and shortcuts
-                print(
+                logger.debug(
                     f"Contracted node: {node}, Level: {level}, "
                     f"Shortcuts added: {len(shortcuts)}"
                 )
+                for u, v in shortcuts:
+                    logger.debug(f"  Added shortcut: {u}->{v}")
 
                 # Show progress
                 progress = (level / total_nodes) * 100
                 if progress - last_progress >= progress_interval:
                     elapsed = time.time() - start_time
                     remaining = (elapsed / level) * (total_nodes - level)
-                    print(f"Preprocessing: {progress:.1f}% complete, " f"ETA: {remaining:.1f}s")
+                    print(f"Preprocessing: {progress:.1f}% complete, ETA: {remaining:.1f}s")
                     last_progress = progress
 
                 # Update importance of affected nodes
@@ -99,6 +110,8 @@ class ContractionPreprocessor:
                 for u, v in shortcuts:
                     affected.add(u)
                     affected.add(v)
+
+                logger.debug(f"Affected nodes after contracting {node}: {affected}")
 
                 for affected_node in affected:
                     if affected_node not in self.storage.get_state().node_level:
@@ -109,9 +122,14 @@ class ContractionPreprocessor:
                             self.storage.get_state().node_level,
                             self._count_shortcuts(affected_node),
                         )
+                        logger.debug(f"Updated importance for {affected_node}: {new_importance}")
                         heappush(pq, (new_importance, affected_node))
 
         total_time = time.time() - start_time
+        logger.debug(
+            f"Final node levels: {self.storage.get_state().node_level}\n"
+            f"Final shortcuts: {self.storage.get_shortcuts()}"
+        )
         print(
             f"Preprocessing complete in {total_time:.1f}s, "
             f"created {len(self.storage.get_shortcuts())} shortcuts"
@@ -135,6 +153,10 @@ class ContractionPreprocessor:
         )  # Sort for determinism
         outgoing = sorted(list(self.graph.get_neighbors(node)))  # Sort for determinism
 
+        logger.debug(f"Contracting node {node}")
+        logger.debug(f"  Incoming edges from: {incoming}")
+        logger.debug(f"  Outgoing edges to: {outgoing}")
+
         # Consider all pairs of incoming and outgoing edges
         for u in incoming:
             # Don't skip contracted nodes - we need to consider all paths
@@ -149,6 +171,7 @@ class ContractionPreprocessor:
                     continue
 
                 shortcut_weight = lower_edge.metadata.weight + upper_edge.metadata.weight
+                logger.debug(f"  Considering shortcut {u}->{v} with weight {shortcut_weight}")
 
                 # Check if shortcut is necessary using witness search
                 if is_shortcut_necessary(u, v, node, shortcut_weight, self.graph):
@@ -156,6 +179,9 @@ class ContractionPreprocessor:
                     shortcut = Shortcut.create(u, v, node, lower_edge, upper_edge)
                     self.storage.add_shortcut(shortcut)
                     shortcuts.append((u, v))
+                    logger.debug(f"    Added shortcut {u}->{v}")
+                else:
+                    logger.debug(f"    Shortcut {u}->{v} not necessary")
 
         return shortcuts
 
@@ -175,6 +201,10 @@ class ContractionPreprocessor:
         )  # Sort for determinism
         outgoing = sorted(list(self.graph.get_neighbors(node)))  # Sort for determinism
 
+        logger.debug(f"Counting shortcuts for node {node}")
+        logger.debug(f"  Incoming edges from: {incoming}")
+        logger.debug(f"  Outgoing edges to: {outgoing}")
+
         for u in incoming:
             for v in outgoing:
                 if u == v:
@@ -186,5 +216,6 @@ class ContractionPreprocessor:
                     shortcut_weight = lower_edge.metadata.weight + upper_edge.metadata.weight
                     if is_shortcut_necessary(u, v, node, shortcut_weight, self.graph):
                         shortcuts.add((u, v))
+                        logger.debug(f"    Shortcut needed: {u}->{v}")
 
         return len(shortcuts)

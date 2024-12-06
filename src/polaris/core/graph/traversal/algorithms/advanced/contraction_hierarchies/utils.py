@@ -6,6 +6,7 @@ shortcut necessity checking, and path validation.
 """
 
 from typing import Dict, List, Optional, Set, TYPE_CHECKING
+import logging
 
 from polaris.core.graph.traversal.utils import WeightFunc, get_edge_weight
 from polaris.core.models import Edge
@@ -14,6 +15,11 @@ from .models import SHORTCUT_TYPE
 
 if TYPE_CHECKING:
     from polaris.core.graph import Graph
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+
+EPSILON = 1e-10  # Consistent epsilon value for floating point comparisons
 
 
 def calculate_node_importance(
@@ -59,6 +65,15 @@ def calculate_node_importance(
         + original_edges  # Base importance on connectivity
     )
 
+    logger.debug(
+        f"Node {node} importance calculation:\n"
+        f"  Shortcut count: {shortcut_count}\n"
+        f"  Contracted neighbors: {contracted_count}\n"
+        f"  Level: {level}\n"
+        f"  Original edges: {original_edges}\n"
+        f"  Final importance: {importance}"
+    )
+
     return importance
 
 
@@ -86,6 +101,11 @@ def is_shortcut_necessary(
     """
     from heapq import heappop, heappush
 
+    logger.debug(
+        f"Checking if shortcut {source}->{target} (via {via}) "
+        f"with weight {shortcut_weight} is necessary"
+    )
+
     # Initialize distances and priority queue
     distances = {source: 0.0}
     pq = [(0.0, source)]
@@ -95,13 +115,19 @@ def is_shortcut_necessary(
         dist, node = heappop(pq)
 
         if node == target:
-            # Found a witness path that's better than the shortcut
-            return dist > shortcut_weight - 1e-10  # Allow for floating point error
+            # Found a witness path that's better than or equal to the shortcut
+            logger.debug(
+                f"Found path to target with distance {dist} "
+                f"(shortcut weight: {shortcut_weight})"
+            )
+            # Use consistent epsilon comparison
+            return dist > shortcut_weight + EPSILON
 
         if node in visited or node == via:  # Don't go through contracted node
             continue
 
         visited.add(node)
+        logger.debug(f"Visiting node {node} with distance {dist}")
 
         # Sort neighbors for deterministic behavior
         neighbors = sorted(graph.get_neighbors(node))
@@ -115,14 +141,18 @@ def is_shortcut_necessary(
 
             edge_weight = get_edge_weight(edge, weight_func)
             new_dist = dist + edge_weight
-            if new_dist >= shortcut_weight + 1e-10:  # Early termination with epsilon
+
+            # Use consistent epsilon comparison
+            if new_dist > shortcut_weight + EPSILON:
                 continue
 
             if neighbor not in distances or new_dist < distances[neighbor]:
+                logger.debug(f"    Updating distance to {neighbor}: {new_dist}")
                 distances[neighbor] = new_dist
                 heappush(pq, (new_dist, neighbor))
 
     # No witness path found within weight limit
+    logger.debug("No witness path found, shortcut is necessary")
     return True
 
 
@@ -137,6 +167,10 @@ def unpack_shortcut(shortcut_path: List[Edge], graph: "Graph") -> List[Edge]:
     Returns:
         Path with shortcuts expanded to original edges
     """
+    logger.debug("Unpacking shortcuts in path:")
+    for edge in shortcut_path:
+        logger.debug(f"  {edge.from_entity}->{edge.to_entity} (weight: {edge.metadata.weight})")
+
     unpacked_path = []
     for edge in shortcut_path:
         # Check if this is actually a shortcut - regular edges should be passed through
@@ -156,8 +190,14 @@ def unpack_shortcut(shortcut_path: List[Edge], graph: "Graph") -> List[Edge]:
 
             if via_node is None:
                 # Not a shortcut, treat as regular edge
+                logger.debug(
+                    f"Edge {edge.from_entity}->{edge.to_entity} "
+                    f"marked as shortcut but missing via node"
+                )
                 unpacked_path.append(edge)
                 continue
+
+            logger.debug(f"Unpacking shortcut {edge.from_entity}->{edge.to_entity} via {via_node}")
 
             # Get component edges...
             lower_edge = graph.get_edge(edge.from_entity, via_node)
@@ -165,6 +205,7 @@ def unpack_shortcut(shortcut_path: List[Edge], graph: "Graph") -> List[Edge]:
 
             if lower_edge and upper_edge:
                 # Recursively unpack component edges
+                logger.debug("  Found component edges, recursively unpacking")
                 unpacked_path.extend(unpack_shortcut([lower_edge, upper_edge], graph))
             else:
                 # If we can't unpack a marked shortcut, that's an error
@@ -173,7 +214,12 @@ def unpack_shortcut(shortcut_path: List[Edge], graph: "Graph") -> List[Edge]:
                 )
         else:
             # Not a shortcut, add directly to path
+            logger.debug(f"Regular edge {edge.from_entity}->{edge.to_entity}, adding to path")
             unpacked_path.append(edge)
+
+    logger.debug("Final unpacked path:")
+    for edge in unpacked_path:
+        logger.debug(f"  {edge.from_entity}->{edge.to_entity} (weight: {edge.metadata.weight})")
 
     return unpacked_path
 
@@ -189,12 +235,21 @@ def validate_shortcuts(shortcuts: Dict[str, Edge], graph: "Graph") -> bool:
     Returns:
         True if shortcuts are valid, False otherwise
     """
+    logger.debug("Validating shortcuts...")
     for edge in shortcuts.values():
         if edge.relation_type != SHORTCUT_TYPE:
+            logger.debug(
+                f"Invalid shortcut {edge.from_entity}->{edge.to_entity}: "
+                f"wrong relation type {edge.relation_type}"
+            )
             return False
 
         # Extract via node from context
         if not edge.context or not edge.context.startswith("Shortcut via "):
+            logger.debug(
+                f"Invalid shortcut {edge.from_entity}->{edge.to_entity}: "
+                f"missing or invalid context"
+            )
             return False
 
         via_node = edge.context.split()[-1]
@@ -204,13 +259,22 @@ def validate_shortcuts(shortcuts: Dict[str, Edge], graph: "Graph") -> bool:
         upper_edge = graph.get_edge(via_node, edge.to_entity)
 
         if not lower_edge or not upper_edge:
+            logger.debug(
+                f"Invalid shortcut {edge.from_entity}->{edge.to_entity}: "
+                f"missing component edges via {via_node}"
+            )
             return False
 
         # Verify weight consistency
         shortcut_weight = edge.metadata.weight
         actual_weight = lower_edge.metadata.weight + upper_edge.metadata.weight
 
-        if abs(shortcut_weight - actual_weight) > 1e-10:  # Allow for floating point error
+        if abs(shortcut_weight - actual_weight) > EPSILON:
+            logger.debug(
+                f"Invalid shortcut {edge.from_entity}->{edge.to_entity}: "
+                f"weight mismatch {shortcut_weight} != {actual_weight}"
+            )
             return False
 
+    logger.debug("All shortcuts valid")
     return True
