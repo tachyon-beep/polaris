@@ -2,7 +2,7 @@
 
 import pytest
 import time
-from typing import Dict, List, Set
+from typing import Dict, List, Set, Tuple
 from threading import Thread
 from queue import Queue
 import concurrent.futures
@@ -365,3 +365,147 @@ def test_error_handling_edge_cases(complex_graph: Graph) -> None:
 
     with pytest.raises(GraphOperationError):
         ch.find_path("A", "")
+
+
+@pytest.mark.timeout(10)
+def test_concurrent_level_constraints(complex_graph: Graph) -> None:
+    """Test thread safety of level constraint checking."""
+    ch = ContractionHierarchies(complex_graph)
+    ch.preprocess()
+
+    def find_path_with_validation(start: str, end: str, results: List[bool]) -> None:
+        try:
+            result = ch.find_path(start, end)
+            # Verify level constraints
+            path_nodes = [edge.from_entity for edge in result.path] + [result.path[-1].to_entity]
+            levels = [ch.state.node_level.get(n, 0) for n in path_nodes]
+            # Check up-then-down pattern
+            max_idx = levels.index(max(levels))
+            assert all(levels[i] <= levels[i + 1] for i in range(max_idx - 1))
+            assert all(levels[i] >= levels[i + 1] for i in range(max_idx, len(levels) - 1))
+            results.append(True)
+        except Exception:
+            results.append(False)
+
+    results: List[bool] = []
+    threads = []
+
+    # Run multiple path findings concurrently
+    for _ in range(10):
+        t = Thread(target=find_path_with_validation, args=("A", "E", results))
+        threads.append(t)
+        t.start()
+
+    for t in threads:
+        t.join()
+
+    assert all(results), "Some concurrent path findings violated level constraints"
+
+
+@pytest.mark.timeout(10)
+def test_concurrent_state_consistency(large_graph: Graph) -> None:
+    """Test consistency of search state during concurrent operations."""
+    ch = ContractionHierarchies(large_graph)
+    ch.preprocess()
+
+    def verify_state_consistency(results: List[bool]) -> None:
+        try:
+            # Find multiple paths
+            for i in range(5):
+                start = f"{i},0"
+                end = f"{i},9"
+                result = ch.find_path(start, end)
+                # Verify path is valid
+                path_nodes = [edge.from_entity for edge in result.path] + [
+                    result.path[-1].to_entity
+                ]
+                assert len(path_nodes) == len(set(path_nodes)), "Path contains duplicates"
+                assert path_nodes[0] == start, "Path doesn't start at start node"
+                assert path_nodes[-1] == end, "Path doesn't end at end node"
+            results.append(True)
+        except Exception:
+            results.append(False)
+
+    results: List[bool] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(verify_state_consistency, results) for _ in range(4)]
+        concurrent.futures.wait(futures)
+
+    assert all(results), "State consistency violated during concurrent operations"
+
+
+@pytest.mark.timeout(10)
+def test_concurrent_cache_consistency(large_graph: Graph) -> None:
+    """Test thread safety of caching mechanism."""
+    ch = ContractionHierarchies(large_graph)
+    ch.preprocess()
+
+    def verify_cache_consistency(start: str, end: str, results: List[Tuple[float, float]]) -> None:
+        # First call to populate cache
+        result1 = ch.find_path(start, end)
+        time.sleep(0.1)  # Introduce potential race condition
+        # Second call should use cache
+        result2 = ch.find_path(start, end)
+        results.append((result1.total_weight, result2.total_weight))
+
+    results: List[Tuple[float, float]] = []
+    threads = []
+
+    # Run multiple cache verifications concurrently
+    pairs = [("0,0", "9,9"), ("0,5", "9,5"), ("5,0", "5,9")]
+    for start, end in pairs:
+        t = Thread(target=verify_cache_consistency, args=(start, end, results))
+        threads.append(t)
+        t.start()
+
+    for t in threads:
+        t.join()
+
+    # Verify cache consistency
+    for first, second in results:
+        assert first == second, "Cache produced inconsistent results"
+
+
+@pytest.mark.timeout(10)
+def test_atomic_path_validation(complex_graph: Graph) -> None:
+    """Test atomicity of path validation."""
+    ch = ContractionHierarchies(complex_graph)
+    ch.preprocess()
+
+    def validate_paths(results: Queue) -> None:
+        try:
+            # Find path that requires validation
+            result = ch.find_path("A", "E")
+            path_nodes = [edge.from_entity for edge in result.path] + [result.path[-1].to_entity]
+
+            # Verify atomic validation
+            seen_nodes = set()
+            for node in path_nodes:
+                if node in seen_nodes:
+                    results.put(False)
+                    return
+                seen_nodes.add(node)
+                time.sleep(0.01)  # Introduce potential race condition
+
+            results.put(True)
+        except Exception:
+            results.put(False)
+
+    results = Queue()
+    threads = []
+
+    # Run multiple validations concurrently
+    for _ in range(5):
+        t = Thread(target=validate_paths, args=(results,))
+        threads.append(t)
+        t.start()
+
+    for t in threads:
+        t.join()
+
+    # Check all validations succeeded
+    validation_results = []
+    while not results.empty():
+        validation_results.append(results.get())
+
+    assert all(validation_results), "Path validation atomicity violated"

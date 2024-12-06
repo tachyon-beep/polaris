@@ -12,6 +12,7 @@ import threading
 import time
 from copy import deepcopy
 from collections import defaultdict
+from contextlib import contextmanager
 from heapq import heappop, heappush
 
 from polaris.core.exceptions import GraphOperationError
@@ -34,6 +35,104 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
 
+class ThreadSafeDict(dict):
+    """Thread-safe dictionary implementation."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._lock = threading.RLock()
+
+    def __getitem__(self, key):
+        with self._lock:
+            return super().__getitem__(key)
+
+    def __setitem__(self, key, value):
+        with self._lock:
+            super().__setitem__(key, value)
+
+    def __delitem__(self, key):
+        with self._lock:
+            super().__delitem__(key)
+
+    def get(self, key, default=None):
+        with self._lock:
+            return super().get(key, default)
+
+    def setdefault(self, key, default=None):
+        with self._lock:
+            return super().setdefault(key, default)
+
+
+class ThreadSafeSet(set):
+    """Thread-safe set implementation."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._lock = threading.RLock()
+
+    def add(self, item):
+        with self._lock:
+            super().add(item)
+
+    def remove(self, item):
+        with self._lock:
+            super().remove(item)
+
+    def discard(self, item):
+        with self._lock:
+            super().discard(item)
+
+    def __contains__(self, item):
+        with self._lock:
+            return super().__contains__(item)
+
+
+class SearchState:
+    """Thread-safe container for path finding state."""
+
+    def __init__(self):
+        self._forward_distances = ThreadSafeDict()
+        self._backward_distances = ThreadSafeDict()
+        self._forward_visited = ThreadSafeSet()
+        self._backward_visited = ThreadSafeSet()
+        self._path_nodes = ThreadSafeSet()
+        self._lock = threading.RLock()
+
+    def reset(self):
+        """Reset all search state."""
+        with self._lock:
+            self._forward_distances.clear()
+            self._backward_distances.clear()
+            self._forward_visited.clear()
+            self._backward_visited.clear()
+            self._path_nodes.clear()
+
+    @contextmanager
+    def atomic_update(self):
+        """Context manager for atomic state updates."""
+        with self._lock:
+            yield
+
+    def get_distances(self, is_forward: bool) -> Dict[str, float]:
+        """Get distances dict for given direction."""
+        return self._forward_distances if is_forward else self._backward_distances
+
+    def add_path_node(self, node: str) -> bool:
+        """Add node to path, return False if would create cycle."""
+        if node in self._path_nodes:
+            return False
+        self._path_nodes.add(node)
+        return True
+
+    def remove_path_node(self, node: str):
+        """Remove node from path."""
+        self._path_nodes.discard(node)
+
+    def get_path_nodes(self) -> Set[str]:
+        """Get copy of current path nodes."""
+        return set(self._path_nodes)
+
+
 class PerformanceMonitor:
     """Monitor and log performance metrics."""
 
@@ -49,14 +148,15 @@ class PerformanceMonitor:
     def get_statistics(self) -> Dict[str, Dict[str, float]]:
         """Get statistical summary of recorded metrics."""
         stats = {}
-        for name, values in self.metrics.items():
-            if values:  # Only compute stats if we have values
-                stats[name] = {
-                    "avg": statistics.mean(values),
-                    "min": min(values),
-                    "max": max(values),
-                    "std": statistics.stdev(values) if len(values) > 1 else 0,
-                }
+        with self._lock:
+            for name, values in self.metrics.items():
+                if values:  # Only compute stats if we have values
+                    stats[name] = {
+                        "avg": statistics.mean(values),
+                        "min": min(values),
+                        "max": max(values),
+                        "std": statistics.stdev(values) if len(values) > 1 else 0,
+                    }
         return stats
 
 
@@ -91,48 +191,49 @@ class ContractionPathFinder:
         self.graph = graph
         self.state = state
         self.storage = storage
-        self._lock = threading.RLock()  # Reentrant lock for thread safety
 
-        # Initialize caches and indices
-        self._shortcut_index = self._build_shortcut_index()
-        self._neighbor_cache = {}
+        # Thread-safe state management
+        self._state_lock = threading.RLock()
+        self._graph_lock = threading.RLock()
+        self._cache_lock = threading.RLock()
+
+        # Initialize thread-safe caches and indices
+        with self._cache_lock:
+            self._shortcut_index = self._build_shortcut_index()
+            self._neighbor_cache = ThreadSafeDict()
+
         self._performance = PerformanceMonitor()
-        self._reset_search_state()
-
-    def _reset_search_state(self):
-        """Reset all search-related state between path finding operations."""
-        self._forward_distances = {}
-        self._backward_distances = {}
-        self._forward_visited = set()
-        self._backward_visited = set()
-        self._path_nodes = set()
+        self._search_state = SearchState()
 
     def _build_shortcut_index(self) -> Dict[str, List[Tuple[str, Edge]]]:
         """Build efficient index for shortcut lookup."""
         index = defaultdict(list)
-        for (u, v), shortcut in self.state.shortcuts.items():
-            index[u].append((v, shortcut.edge))
-            index[v].append((u, shortcut.edge))  # Bidirectional lookup
+        with self._state_lock:
+            for (u, v), shortcut in self.state.shortcuts.items():
+                index[u].append((v, shortcut.edge))
+                index[v].append((u, shortcut.edge))  # Bidirectional lookup
         return dict(index)
 
     def _get_edges_to_process(self, node: str, is_forward: bool) -> Iterator[Tuple[str, Edge]]:
         """Get all edges efficiently using cached indices."""
-        # Get regular edges
-        neighbors = self.graph.get_neighbors(node, reverse=not is_forward)
-        for neighbor in neighbors:
-            edge = self.graph.get_edge(
-                node if is_forward else neighbor, neighbor if is_forward else node
-            )
-            if edge:
-                yield neighbor, edge
+        with self._graph_lock:
+            # Get regular edges
+            neighbors = self.graph.get_neighbors(node, reverse=not is_forward)
+            for neighbor in neighbors:
+                edge = self.graph.get_edge(
+                    node if is_forward else neighbor, neighbor if is_forward else node
+                )
+                if edge:
+                    yield neighbor, edge
 
         # Get shortcuts efficiently using index
-        if node in self._shortcut_index:
-            for target, edge in self._shortcut_index[node]:
-                if is_forward:
-                    yield target, edge
-                else:
-                    yield target, self._create_reverse_edge(edge)
+        with self._cache_lock:
+            if node in self._shortcut_index:
+                for target, edge in self._shortcut_index[node]:
+                    if is_forward:
+                        yield target, edge
+                    else:
+                        yield target, self._create_reverse_edge(edge)
 
     def _is_path_valid(self, node: str, new_dist: float, distances: Dict[str, float]) -> bool:
         """
@@ -144,32 +245,35 @@ class ContractionPathFinder:
             return False
 
         # Check for cycles using path tracking
-        if node in self._path_nodes:
+        if not self._search_state.add_path_node(node):
             return False
 
         # Check level constraints
         if self._violates_level_constraints(node):
+            self._search_state.remove_path_node(node)
             return False
 
         return True
 
     def _violates_level_constraints(self, node: str) -> bool:
         """Check if adding this node would violate hierarchy constraints."""
-        if node not in self.state.node_level:
-            return False
-
-        current_level = self.state.node_level[node]
-        path_levels = [self.state.node_level.get(n, 0) for n in self._path_nodes]
-
-        # Enforce up-then-down pattern in hierarchy
-        if path_levels:
-            max_level = max(path_levels)
-            if current_level > max_level:  # Still going up
+        with self._state_lock:
+            if node not in self.state.node_level:
                 return False
-            min_level_after_max = min(l for l in path_levels[path_levels.index(max_level) :])
-            if current_level > min_level_after_max:  # Violates down phase
-                return True
-        return False
+
+            current_level = self.state.node_level[node]
+            path_nodes = self._search_state.get_path_nodes()
+            path_levels = [self.state.node_level.get(n, 0) for n in path_nodes]
+
+            # Enforce up-then-down pattern in hierarchy
+            if path_levels:
+                max_level = max(path_levels)
+                if current_level > max_level:  # Still going up
+                    return False
+                min_level_after_max = min(l for l in path_levels[path_levels.index(max_level) :])
+                if current_level > min_level_after_max:  # Violates down phase
+                    return True
+            return False
 
     def find_path(
         self,
@@ -201,8 +305,8 @@ class ContractionPathFinder:
         start_time = time.time()
 
         try:
-            with self._lock:  # Thread safety for entire path finding operation
-                self._reset_search_state()
+            with self._state_lock:  # Thread safety for entire path finding operation
+                self._search_state.reset()
 
                 if start_node == end_node:
                     return PathResult(path=[], total_weight=0.0)
@@ -250,7 +354,9 @@ class ContractionPathFinder:
             pass
 
         # Try alternative paths through different nodes
-        nodes = sorted(self.graph.get_nodes())  # Sort for deterministic behavior
+        with self._graph_lock:
+            nodes = sorted(self.graph.get_nodes())  # Sort for deterministic behavior
+
         for node in nodes:
             if node == start_node or node == end_node:
                 continue
@@ -278,20 +384,25 @@ class ContractionPathFinder:
         if debug:
             logger.debug(f"Starting bidirectional search from {start_node} to {end_node}")
 
-        if not self.graph.has_node(start_node):
-            raise GraphOperationError(f"Start node {start_node} not found in graph")
-        if not self.graph.has_node(end_node):
-            raise GraphOperationError(f"End node {end_node} not found in graph")
+        with self._graph_lock:
+            if not self.graph.has_node(start_node):
+                raise GraphOperationError(f"Start node {start_node} not found in graph")
+            if not self.graph.has_node(end_node):
+                raise GraphOperationError(f"End node {end_node} not found in graph")
 
         # Initialize searches
         forward_pq = [(0.0, start_node)]
         backward_pq = [(0.0, end_node)]
 
-        self._forward_distances[start_node] = 0.0
-        self._backward_distances[end_node] = 0.0
+        forward_distances = self._search_state.get_distances(True)
+        backward_distances = self._search_state.get_distances(False)
 
-        forward_predecessors: Dict[str, Tuple[str, Edge]] = {}
-        backward_predecessors: Dict[str, Tuple[str, Edge]] = {}
+        with self._search_state.atomic_update():
+            forward_distances[start_node] = 0.0
+            backward_distances[end_node] = 0.0
+
+        forward_predecessors = ThreadSafeDict()
+        backward_predecessors = ThreadSafeDict()
 
         best_dist = float("inf")
         meeting_node = None
@@ -310,8 +421,8 @@ class ContractionPathFinder:
                 best_dist, meeting_node = self._process_search_step(
                     True,
                     forward_pq,
-                    self._forward_distances,
-                    self._backward_distances,
+                    forward_distances,
+                    backward_distances,
                     forward_predecessors,
                     best_dist,
                     meeting_node,
@@ -321,8 +432,8 @@ class ContractionPathFinder:
                 best_dist, meeting_node = self._process_search_step(
                     False,
                     backward_pq,
-                    self._backward_distances,
-                    self._forward_distances,
+                    backward_distances,
+                    forward_distances,
                     backward_predecessors,
                     best_dist,
                     meeting_node,
@@ -381,7 +492,6 @@ class ContractionPathFinder:
                 distances[neighbor] = new_dist
                 predecessors[neighbor] = (node, edge)
                 heappush(pq, (new_dist, neighbor))
-                self._path_nodes.add(neighbor)
 
         return best_dist, meeting_node
 

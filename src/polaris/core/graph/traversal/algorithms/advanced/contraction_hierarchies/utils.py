@@ -18,6 +18,7 @@ from polaris.core.graph.traversal.utils import WeightFunc, get_edge_weight
 from polaris.core.models import Edge
 from polaris.core.exceptions import GraphOperationError
 from .models import SHORTCUT_TYPE
+from .cache import get_cache_manager, get_cache_size
 
 if TYPE_CHECKING:
     from polaris.core.graph import Graph
@@ -61,49 +62,6 @@ _performance = PerformanceMonitor()
 
 # Enhanced thread safety with RLock
 _graph_lock = threading.RLock()
-
-
-def get_cache_size(graph: "Graph") -> int:
-    """Calculate appropriate cache size based on graph size."""
-    node_count = len(list(graph.get_nodes()))
-    # Base size of 10000, scaled by number of nodes
-    return max(10000, min(100000, node_count * 100))
-
-
-class DynamicLRUCache:
-    """Thread-safe LRU cache with dynamic sizing."""
-
-    def __init__(self):
-        self._cache = {}
-        self._lock = threading.Lock()
-        self._hits = 0
-        self._misses = 0
-
-    def get(self, key: str) -> Optional[Any]:
-        """Get value from cache."""
-        with self._lock:
-            if key in self._cache:
-                self._hits += 1
-                return self._cache[key]
-            self._misses += 1
-            return None
-
-    def set(self, key: str, value: Any, max_size: int):
-        """Set value in cache with size limit."""
-        with self._lock:
-            self._cache[key] = value
-            if len(self._cache) > max_size:
-                # Remove oldest entry
-                self._cache.pop(next(iter(self._cache)))
-
-    def get_stats(self) -> Dict[str, int]:
-        """Get cache statistics."""
-        with self._lock:
-            return {"hits": self._hits, "misses": self._misses, "size": len(self._cache)}
-
-
-# Global cache instance
-_witness_cache = DynamicLRUCache()
 
 
 def _compute_graph_hash(graph: "Graph", source: str, target: str, via: str) -> str:
@@ -254,9 +212,12 @@ def _witness_search(
 
     start_time = time.time()
     try:
-        # Check cache first
+        # Get cache instance
+        cache = get_cache_manager().get_cache("witness_search")
         cache_key = f"{graph_hash}:{shortcut_weight}"
-        cached_result = _witness_cache.get(cache_key)
+
+        # Check cache first
+        cached_result = cache.get(cache_key)
         if cached_result is not None:
             return cached_result
 
@@ -271,7 +232,7 @@ def _witness_search(
             if node == target:
                 # Found a witness path that's better than or equal to the shortcut
                 result = dist > shortcut_weight + EPSILON
-                _witness_cache.set(cache_key, result, get_cache_size(graph))
+                cache.set(cache_key, result, get_cache_size(graph))
                 return result
 
             if node in visited or node == via:  # Don't go through contracted node
@@ -301,7 +262,7 @@ def _witness_search(
 
         # No witness path found within weight limit
         result = True
-        _witness_cache.set(cache_key, result, get_cache_size(graph))
+        cache.set(cache_key, result, get_cache_size(graph))
         return result
 
     finally:
@@ -345,7 +306,8 @@ def is_shortcut_necessary(
             is_necessary = _witness_search(graph_hash, source, target, via, shortcut_weight, graph)
 
             # Log cache statistics periodically
-            cache_stats = _witness_cache.get_stats()
+            cache = get_cache_manager().get_cache("witness_search")
+            cache_stats = cache.get_stats()
             if cache_stats["hits"] % 1000 == 0:
                 logger.info(f"Witness search cache stats: {cache_stats}")
 
