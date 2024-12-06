@@ -159,9 +159,9 @@ def test_memory_efficiency():
         total_labels += len(hl.state.get_forward_labels(node).labels)
         total_labels += len(hl.state.get_backward_labels(node).labels)
 
-    # In a complete graph we expect O(n^2) labels total
+    # In a complete graph with bidirectional labels, we expect O(2n^2) labels total
     n = len(nodes)
-    max_expected_labels = n * (n - 1)  # Theoretical upper bound
+    max_expected_labels = 2 * n * (n - 1)  # Theoretical upper bound for bidirectional labels
     assert (
         total_labels <= max_expected_labels
     ), f"Too many labels: {total_labels} (expected <= {max_expected_labels})"

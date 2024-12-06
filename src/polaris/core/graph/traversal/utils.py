@@ -81,9 +81,12 @@ def is_better_cost(new_cost: float, old_cost: float) -> bool:
     # For both standard and inverse weights, smaller total is better
     # Use relative comparison for floating point numbers
     # This handles both small and large differences appropriately
+
+
+def is_better_cost(new_cost: float, old_cost: float) -> bool:
     relative_diff = abs(new_cost - old_cost) / max(abs(new_cost), abs(old_cost))
     if relative_diff < EPSILON:
-        return False  # Costs are effectively equal
+        return True  # When costs are very close, prefer the new path
     return new_cost < old_cost
 
 
