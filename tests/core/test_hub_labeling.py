@@ -58,7 +58,7 @@ def test_basic_path_finding():
     assert result.path[0].to_entity == "B"
     assert result.path[1].from_entity == "B"
     assert result.path[1].to_entity == "C"
-    assert result.total_weight == 3.0
+    assert result.total_weight == pytest.approx(3.0)
 
 
 def test_error_handling():
@@ -117,7 +117,7 @@ def test_query_performance():
     num_queries = 5
     for _ in range(num_queries):
         start_time = time.time()
-        result = hl.find_path("A", "N9")
+        _ = hl.find_path("A", "N9")
         total_query_time += time.time() - start_time
 
     avg_query_time = total_query_time / num_queries

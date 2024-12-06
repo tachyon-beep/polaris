@@ -88,12 +88,12 @@ def reconstruct_path(
         forward_labels = state.get_forward_labels(current)
 
         # Try direct path to target
-        if target_label := forward_labels.get_label(target):
-            if target_label.first_hop:
-                path.append(target_label.first_hop)
-                current = target_label.first_hop.to_entity
-                visited.add(current)
-                continue
+        target_label = forward_labels.get_label(target)
+        if target_label is not None and target_label.first_hop is not None:
+            path.append(target_label.first_hop)
+            current = target_label.first_hop.to_entity
+            visited.add(current)
+            continue
 
         # Try path through intermediate nodes
         min_dist = float("inf")
@@ -111,14 +111,15 @@ def reconstruct_path(
 
                 # Check if we can reach target from this node
                 next_labels = state.get_forward_labels(next_node)
-                if next_labels.get_label(target):
-                    total_dist = label.distance + next_labels.get_label(target).distance
+                next_target_label = next_labels.get_label(target)
+                if next_target_label is not None:
+                    total_dist = label.distance + next_target_label.distance
                     if total_dist < min_dist:
                         min_dist = total_dist
                         best_hop = label.first_hop
                         best_next = next_node
 
-        if best_hop:
+        if best_hop and best_next:  # Ensure both best_hop and best_next are not None
             path.append(best_hop)
             current = best_next
             visited.add(current)
@@ -370,7 +371,8 @@ def compute_distance(source: str, target: str, state: HubLabelState) -> Optional
 
     # Try direct path first
     forward_labels = state.get_forward_labels(source)
-    if target_label := forward_labels.get_label(target):
+    target_label = forward_labels.get_label(target)
+    if target_label is not None:
         return target_label.distance
 
     # Try paths through intermediate nodes
@@ -383,7 +385,8 @@ def compute_distance(source: str, target: str, state: HubLabelState) -> Optional
 
         # Try direct path to target from current node
         current_labels = state.get_forward_labels(current)
-        if target_label := current_labels.get_label(target):
+        target_label = current_labels.get_label(target)
+        if target_label is not None:
             total_dist = dist + target_label.distance
             min_dist = min(min_dist, total_dist)
             continue
