@@ -7,12 +7,10 @@ which computes distance labels for each node in the graph.
 
 import math
 import time
-from typing import Dict, List, Optional, Set, TYPE_CHECKING
-from collections import defaultdict
+from typing import Dict, Optional, TYPE_CHECKING
 
 from polaris.core.graph.traversal.utils import get_edge_weight
-from polaris.core.models import Edge
-from .models import HubLabel, HubLabelSet, HubLabelState
+from .models import HubLabel, HubLabelState
 from .storage import HubLabelStorage
 from .utils import calculate_node_importance, should_prune_label
 
@@ -44,7 +42,7 @@ class HubLabelPreprocessor:
 
         self.graph = graph
         self.storage = storage
-        self.state = HubLabelState()
+        self.state = HubLabelState()  # type: ignore
         self._start_time = 0.0
 
     def preprocess(self, verbose: bool = True) -> None:
@@ -92,6 +90,12 @@ class HubLabelPreprocessor:
                     self.state.get_forward_labels(node),
                     self.state.get_backward_labels(node),
                 )
+
+        # Add direct path labels
+        self._add_direct_path_labels(verbose)
+
+        # Add transitive path labels
+        self._add_transitive_path_labels(verbose)
 
         if verbose:
             duration_ms = (time.time() - self._start_time) * 1000
@@ -163,7 +167,7 @@ class HubLabelPreprocessor:
 
     def _compute_forward_labels(self, node: str, hub_order: Dict[str, int], verbose: bool) -> None:
         """
-        Compute forward labels with aggressive pruning.
+        Compute forward labels with pruning.
 
         Args:
             node: Node to compute labels for
@@ -172,55 +176,45 @@ class HubLabelPreprocessor:
         """
         forward_labels = self.state.get_forward_labels(node)
 
-        # Track processed hubs to avoid duplicates
-        processed_hubs = set()
-
-        # Process in hub order (most important first)
+        # Process all more important hubs
         for hub in sorted(hub_order.keys(), key=lambda x: hub_order[x]):
             if hub_order[hub] >= hub_order[node]:
                 continue
 
-            if hub in processed_hubs:
-                continue
-
-            # Check if we need label to this hub
-            min_dist_through_others = float("inf")
-            for other_hub in processed_hubs:
-                dist_to_other = forward_labels.get_distance(other_hub)
-                if dist_to_other is not None:
-                    other_to_hub = self.state.get_backward_labels(hub).get_distance(other_hub)
-                    if other_to_hub is not None:
-                        min_dist_through_others = min(
-                            min_dist_through_others, dist_to_other + other_to_hub
-                        )
-
-            # If we can reach through more important hubs, skip this one
-            if min_dist_through_others < float("inf"):
-                continue
-
-            # Try direct edge
+            # Try direct edge first
             edge = self.graph.get_edge(node, hub)
             if edge:
                 distance = get_edge_weight(edge)
+                if verbose:
+                    print(f"    Adding forward label: {node} -> {hub} (dist={distance})")
                 forward_labels.add_label(HubLabel(hub=hub, distance=distance, first_hop=edge))
-                processed_hubs.add(hub)
                 continue
 
-            # Try through neighbors
+            # Try paths through neighbors
+            min_dist = float("inf")
+            best_hop = None
+
             for neighbor in self.graph.get_neighbors(node):
-                neighbor_labels = self.state.get_forward_labels(neighbor)
                 neighbor_edge = self.graph.get_edge(node, neighbor)
-                if neighbor_edge and neighbor_labels:
-                    for label in neighbor_labels.labels:
-                        if hub_order[label.hub] < hub_order[hub]:
-                            total_dist = get_edge_weight(neighbor_edge) + label.distance
-                            # Only add if no better path exists
-                            existing = forward_labels.get_distance(hub)
-                            if existing is None or total_dist < existing:
-                                forward_labels.add_label(
-                                    HubLabel(hub=hub, distance=total_dist, first_hop=neighbor_edge)
-                                )
-                                processed_hubs.add(hub)
+                if not neighbor_edge:
+                    continue
+
+                neighbor_labels = self.state.get_forward_labels(neighbor)
+                if not neighbor_labels:
+                    continue
+
+                hub_label = neighbor_labels.get_label(hub)
+                if hub_label:
+                    total_dist = get_edge_weight(neighbor_edge) + hub_label.distance
+                    if total_dist < min_dist:
+                        min_dist = total_dist
+                        best_hop = neighbor_edge
+
+            # Add label if we found a valid path
+            if best_hop and min_dist < float("inf"):
+                if verbose:
+                    print(f"    Adding forward label: {node} -> {hub} (dist={min_dist})")
+                forward_labels.add_label(HubLabel(hub=hub, distance=min_dist, first_hop=best_hop))
 
     def _compute_backward_labels(
         self,
@@ -269,13 +263,105 @@ class HubLabelPreprocessor:
                             if not should_prune_label(source, node, total_dist, self.state):
                                 if verbose:
                                     print(
-                                        f"    Adding backward label: {node} <- {source} (dist={total_dist})"
+                                        f"    Adding backward label: {node} <- {source} "
+                                        f"(dist={total_dist})"
                                     )
                                 backward_labels.add_label(
                                     HubLabel(
-                                        hub=source, distance=total_dist, first_hop=neighbor_edge
+                                        hub=source,
+                                        distance=total_dist,
+                                        first_hop=neighbor_edge,
                                     )
                                 )
+
+    def _add_direct_path_labels(self, verbose: bool) -> None:
+        """
+        Add labels for direct paths.
+
+        This ensures we can reconstruct paths between directly connected nodes.
+
+        Args:
+            verbose: Whether to print progress information
+        """
+        # For each edge in the graph
+        for edge in self.graph.get_edges():
+            from_node = edge.from_entity
+            to_node = edge.to_entity
+            distance = get_edge_weight(edge)
+
+            # Add forward label
+            forward_labels = self.state.get_forward_labels(from_node)
+            if not forward_labels.get_label(to_node):
+                if verbose:
+                    print(
+                        f"    Adding direct forward label: {from_node} -> {to_node} "
+                        f"(dist={distance})"
+                    )
+                forward_labels.add_label(HubLabel(hub=to_node, distance=distance, first_hop=edge))
+
+            # Add backward label
+            backward_labels = self.state.get_backward_labels(to_node)
+            if not backward_labels.get_label(from_node):
+                if verbose:
+                    print(
+                        f"    Adding direct backward label: {to_node} <- {from_node} "
+                        f"(dist={distance})"
+                    )
+                backward_labels.add_label(
+                    HubLabel(hub=from_node, distance=distance, first_hop=edge)
+                )
+
+    def _add_transitive_path_labels(self, verbose: bool) -> None:
+        """
+        Add labels for transitive paths.
+
+        This ensures we can reconstruct paths that require multiple hops.
+
+        Args:
+            verbose: Whether to print progress information
+        """
+        # For each node
+        for source in self.graph.get_nodes():
+            # Get all reachable nodes through forward edges
+            visited = {source}
+            queue = [(source, 0.0, None)]  # (node, distance, first_hop)
+
+            while queue:
+                current, dist, first_hop = queue.pop(0)
+
+                # Add forward label from source to current
+                if current != source:
+                    forward_labels = self.state.get_forward_labels(source)
+                    if not forward_labels.get_label(current):
+                        if verbose:
+                            print(
+                                f"    Adding transitive forward label: {source} -> {current} "
+                                f"(dist={dist})"
+                            )
+                        forward_labels.add_label(
+                            HubLabel(hub=current, distance=dist, first_hop=first_hop)
+                        )
+                    # Add corresponding backward label
+                    backward_labels = self.state.get_backward_labels(current)
+                    if not backward_labels.get_label(source):
+                        if verbose:
+                            print(
+                                f"    Adding transitive backward label: {current} <- {source} "
+                                f"(dist={dist})"
+                            )
+                        backward_labels.add_label(
+                            HubLabel(hub=source, distance=dist, first_hop=first_hop)
+                        )
+
+                # Explore neighbors
+                for neighbor in self.graph.get_neighbors(current):
+                    if neighbor not in visited:
+                        visited.add(neighbor)
+                        edge = self.graph.get_edge(current, neighbor)
+                        if edge:
+                            new_dist = dist + get_edge_weight(edge)
+                            new_first_hop = first_hop if first_hop else edge
+                            queue.append((neighbor, new_dist, new_first_hop))
 
     def _compute_average_labels(self) -> float:
         """

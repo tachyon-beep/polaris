@@ -6,10 +6,12 @@ to store and manage distance labels.
 """
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, TypeVar, Generic
 import math
 
 from polaris.core.models import Edge
+
+T = TypeVar("T")
 
 
 @dataclass
@@ -25,7 +27,7 @@ class HubLabel:
     distance: float
     first_hop: Optional[Edge]
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Validate label attributes."""
         if not isinstance(self.distance, (int, float)):
             raise ValueError("Distance must be numeric")
@@ -47,7 +49,7 @@ class HubLabelSet:
     providing methods to add and query labels.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize empty label set."""
         self.labels: List[HubLabel] = []
         self._hub_to_labels: Dict[str, List[HubLabel]] = {}
@@ -141,7 +143,7 @@ class HubLabelState:
 
     MAX_ORDER = 1_000_000  # Large value for nodes without explicit order
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize empty state."""
         self._forward_labels: Dict[str, HubLabelSet] = {}
         self._backward_labels: Dict[str, HubLabelSet] = {}

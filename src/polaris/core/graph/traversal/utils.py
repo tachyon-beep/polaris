@@ -8,15 +8,14 @@ import math
 import os
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass, field
-from functools import wraps
+from dataclasses import dataclass
 from heapq import heappop, heappush
-from typing import Any, Callable, Dict, Generator, List, Optional, Set, Tuple, TYPE_CHECKING
+from typing import Dict, Generator, List, Optional, Set, Tuple, TYPE_CHECKING, Iterator
 
-import psutil
+import psutil  # type: ignore # Missing stubs
 
 from .path_models import PathResult, PathValidationError
-from .types import WeightFunc, allow_negative_weights
+from .types import WeightFunc, allow_negative_weights  # Re-export allow_negative_weights
 from polaris.core.models import Edge
 
 if TYPE_CHECKING:
@@ -80,9 +79,12 @@ def is_better_cost(new_cost: float, old_cost: float) -> bool:
     """
     assert isinstance(new_cost, float) and isinstance(old_cost, float), "Costs must be floats"
     # For both standard and inverse weights, smaller total is better
-    # Use epsilon to handle floating point comparison
-    # Note: We want strict inequality here to ensure we find the shortest path
-    return new_cost + EPSILON < old_cost
+    # Use relative comparison for floating point numbers
+    # This handles both small and large differences appropriately
+    relative_diff = abs(new_cost - old_cost) / max(abs(new_cost), abs(old_cost))
+    if relative_diff < EPSILON:
+        return False  # Costs are effectively equal
+    return new_cost < old_cost
 
 
 def calculate_path_weight(path: List[Edge], weight_func: Optional[WeightFunc] = None) -> float:
@@ -121,9 +123,6 @@ def validate_path(
     weight_epsilon: float = EPSILON,
 ) -> None:
     """Validate path with comprehensive checks."""
-    # Import Graph at runtime to avoid circular import
-    from polaris.core.graph import Graph
-
     if not path:
         return
 
@@ -234,21 +233,19 @@ class PathState:
 
     def get_path(self) -> List[Edge]:
         """Efficiently reconstruct path from state chain."""
-        path = []
-        current = self
-        while current.prev_edge:
+        path: List[Edge] = []
+        current: Optional[PathState] = self
+        while current is not None and current.prev_edge is not None:
             path.append(current.prev_edge)
             current = current.prev_state
-            if not current:
-                break
         path.reverse()
         return path
 
     def get_visited(self) -> Set[str]:
         """Efficiently get set of visited nodes."""
-        visited = set()
-        current = self
-        while current:
+        visited: Set[str] = set()
+        current: Optional[PathState] = self
+        while current is not None:
             visited.add(current.node)
             current = current.prev_state
         return visited
@@ -308,17 +305,20 @@ class PriorityQueue:
         """Return the number of valid items in the queue."""
         return len(self._entry_finder)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[Tuple[float, str]]:
         """Return iterator over queue items in priority order."""
-        items = []
+        # Get all valid items
+        valid_items: List[Tuple[float, str]] = []
         while not self.empty():
             item = self.pop()
             if item is not None:
-                items.append(item)
+                valid_items.append(item)
+
         # Restore items to queue
-        for priority, item in items:
-            self.add_or_update(item, priority)
-        return iter(items)
+        for priority, node in valid_items:
+            self.add_or_update(node, priority)
+
+        return iter(valid_items)
 
 
 class MemoryManager:
@@ -377,4 +377,5 @@ class MemoryManager:
 def get_memory_usage() -> int:
     """Get current memory usage in bytes."""
     process = psutil.Process(os.getpid())
-    return process.memory_info().rss
+    mem_info = process.memory_info()
+    return int(mem_info.rss)  # Explicitly convert to int for type safety

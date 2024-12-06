@@ -5,15 +5,14 @@ This module provides helper functions for label pruning, distance calculations,
 and path validation.
 """
 
-import time
 from typing import Dict, List, Optional, Set, Protocol, Tuple, TYPE_CHECKING
 from collections import deque
 
 from polaris.core.graph.traversal.utils import get_edge_weight
 from polaris.core.graph.traversal.cache import PathCache
-from polaris.core.graph.traversal.path_models import PathResult, PerformanceMetrics
+from polaris.core.graph.traversal.path_models import PathResult
 from polaris.core.models import Edge
-from .models import HubLabel, HubLabelSet, HubLabelState
+from .models import HubLabelState
 
 if TYPE_CHECKING:
     from polaris.core.graph import Graph
@@ -48,124 +47,6 @@ def validate_path_continuity(path: List[Edge]) -> bool:
     return True
 
 
-def validate_path_through_hub(source: str, target: str, hub: str, graph: GraphLike) -> bool:
-    """
-    Verify path exists through hub with cycle detection.
-
-    Args:
-        source: Source node
-        target: Target node
-        hub: Hub node to validate path through
-        graph: Graph instance
-
-    Returns:
-        True if valid path exists through hub, False otherwise
-    """
-
-    def bfs_to_hub(start: str, reverse: bool = False) -> bool:
-        queue = deque([(start, [start])])
-        visited = {start}
-
-        while queue:
-            current, path = queue.popleft()
-            if current == hub:
-                return True
-
-            neighbors = graph.get_neighbors(current, reverse=reverse)
-            for neighbor in neighbors:
-                if neighbor not in visited:
-                    visited.add(neighbor)
-                    queue.append((neighbor, path + [neighbor]))
-                    if len(path) > len(graph.get_nodes()):  # Cycle detection
-                        return False
-        return False
-
-    # Check both forward and backward paths exist
-    return bfs_to_hub(source, reverse=False) and bfs_to_hub(target, reverse=True)
-
-
-def build_forward_path(source: str, hub: str, state: HubLabelState, graph: GraphLike) -> List[Edge]:
-    """Build path from source to hub with cycle detection."""
-    path = []
-    current = source
-    visited = {current}
-    path_length = 0
-    max_path_length = len(graph.get_nodes())  # Maximum possible path length
-
-    while current != hub and path_length < max_path_length:
-        next_label = state.get_forward_labels(current).get_label(hub)
-        if next_label is None:
-            return []
-
-        if next_label.first_hop is not None:
-            next_node = next_label.first_hop.to_entity
-            if next_node in visited:  # Cycle detection
-                return []
-            path.append(next_label.first_hop)
-            current = next_node
-            visited.add(current)
-            path_length += 1
-        else:
-            direct_edge = graph.get_edge(current, hub)
-            if direct_edge is None:
-                return []
-            path.append(direct_edge)
-            break
-
-    return [] if path_length >= max_path_length else path
-
-
-def build_backward_path(
-    hub: str, target: str, state: HubLabelState, graph: GraphLike
-) -> List[Edge]:
-    """Build path from hub to target with cycle detection."""
-    path = []
-    current = target
-    visited = {current}
-    path_length = 0
-    max_path_length = len(graph.get_nodes())  # Maximum possible path length
-
-    while current != hub and path_length < max_path_length:
-        next_label = state.get_backward_labels(current).get_label(hub)
-        if next_label is None:
-            return []
-
-        if next_label.first_hop is not None:
-            next_node = next_label.first_hop.from_entity
-            if next_node in visited:  # Cycle detection
-                return []
-            path.append(next_label.first_hop)
-            current = next_node
-            visited.add(current)
-            path_length += 1
-        else:
-            direct_edge = graph.get_edge(hub, current)
-            if direct_edge is None:
-                return []
-            path.append(direct_edge)
-            break
-
-    return [] if path_length >= max_path_length else list(reversed(path))
-
-
-def validate_path_distance(path: List[Edge], expected_distance: float) -> bool:
-    """
-    Validate that path distance matches expected distance.
-
-    Args:
-        path: List of edges forming a path
-        expected_distance: Expected total distance
-
-    Returns:
-        True if path distance matches expected, False otherwise
-    """
-    if not path:
-        return expected_distance == 0
-
-    actual_distance = sum(get_edge_weight(edge) for edge in path)
-    return abs(actual_distance - expected_distance) < 1e-10
-
-
 def reconstruct_path(
     source: str,
     target: str,
@@ -173,7 +54,7 @@ def reconstruct_path(
     graph: GraphLike,
 ) -> List[Edge]:
     """
-    Enhanced path reconstruction with comprehensive validation.
+    Reconstruct shortest path using hub labels.
 
     Args:
         source: Source node
@@ -193,56 +74,87 @@ def reconstruct_path(
     direct_edge = graph.get_edge(source, target)
     if direct_edge:
         direct_dist = get_edge_weight(direct_edge)
-        # Verify no shorter path exists through hubs
         min_hub_dist = compute_distance(source, target, state)
         if min_hub_dist is None or direct_dist <= min_hub_dist:
             return [direct_edge]
 
-    # Find best hub and distances
-    min_dist = float("inf")
-    best_hub = None
-    forward_labels = state.get_forward_labels(source)
-    backward_labels = state.get_backward_labels(target)
+    # Try path through intermediate nodes
+    path = []
+    current = source
+    visited = {current}
 
-    # Find best hub with validated paths
-    for forward_label in forward_labels.labels:
-        backward_label = backward_labels.get_label(forward_label.hub)
-        if backward_label:
-            total_dist = forward_label.distance + backward_label.distance
-            if total_dist < min_dist:
-                # Validate path exists through this hub
-                if validate_path_through_hub(source, target, forward_label.hub, graph):
-                    min_dist = total_dist
-                    best_hub = forward_label.hub
+    while current != target:
+        # Get forward labels from current node
+        forward_labels = state.get_forward_labels(current)
 
-    if not best_hub:
-        return []
+        # Try direct path to target
+        if target_label := forward_labels.get_label(target):
+            if target_label.first_hop:
+                path.append(target_label.first_hop)
+                current = target_label.first_hop.to_entity
+                visited.add(current)
+                continue
 
-    # Build path through best hub
-    forward_path = build_forward_path(source, best_hub, state, graph)
-    backward_path = build_backward_path(best_hub, target, state, graph)
+        # Try path through intermediate nodes
+        min_dist = float("inf")
+        best_hop = None
+        best_next = None
 
-    if not forward_path or not backward_path:
-        return []
+        for label in forward_labels.labels:
+            if label.hub in visited:
+                continue
 
-    # Combine paths
-    path = forward_path + backward_path
+            if label.first_hop:
+                next_node = label.first_hop.to_entity
+                if next_node in visited:
+                    continue
+
+                # Check if we can reach target from this node
+                next_labels = state.get_forward_labels(next_node)
+                if next_labels.get_label(target):
+                    total_dist = label.distance + next_labels.get_label(target).distance
+                    if total_dist < min_dist:
+                        min_dist = total_dist
+                        best_hop = label.first_hop
+                        best_next = next_node
+
+        if best_hop:
+            path.append(best_hop)
+            current = best_next
+            visited.add(current)
+        else:
+            return []
 
     # Validate path
     if not validate_path_continuity(path):
         return []
 
-    if not validate_path_distance(path, min_dist):
-        return []
-
     # Cache valid path
     result = PathResult(
         path=path,
-        total_weight=min_dist,
+        total_weight=sum(get_edge_weight(edge) for edge in path),
     )
     PathCache.put(cache_key, result)
 
     return path
+
+
+def validate_path_distance(path: List[Edge], expected_distance: float) -> bool:
+    """
+    Validate that path distance matches expected distance.
+
+    Args:
+        path: List of edges forming a path
+        expected_distance: Expected total distance
+
+    Returns:
+        True if path distance matches expected, False otherwise
+    """
+    if not path:
+        return expected_distance == 0
+
+    actual_distance = sum(get_edge_weight(edge) for edge in path)
+    return abs(actual_distance - expected_distance) < 1e-10
 
 
 def calculate_node_importance(
@@ -456,21 +368,41 @@ def compute_distance(source: str, target: str, state: HubLabelState) -> Optional
     if cached_result := PathCache.get(cache_key):
         return cached_result.total_weight
 
+    # Try direct path first
     forward_labels = state.get_forward_labels(source)
-    backward_labels = state.get_backward_labels(target)
+    if target_label := forward_labels.get_label(target):
+        return target_label.distance
 
-    # Find minimum distance through a common hub
+    # Try paths through intermediate nodes
     min_dist = float("inf")
-    for forward_label in forward_labels.labels:
-        backward_dist = backward_labels.get_distance(forward_label.hub)
-        if backward_dist is not None:
-            total_dist = forward_label.distance + backward_dist
-            if total_dist < min_dist:
-                min_dist = total_dist
+    visited = {source}
+    queue = [(source, 0.0)]  # (node, distance)
+
+    while queue:
+        current, dist = queue.pop(0)
+
+        # Try direct path to target from current node
+        current_labels = state.get_forward_labels(current)
+        if target_label := current_labels.get_label(target):
+            total_dist = dist + target_label.distance
+            min_dist = min(min_dist, total_dist)
+            continue
+
+        # Try paths through neighbors
+        for label in current_labels.labels:
+            if label.hub in visited:
+                continue
+
+            if label.first_hop:
+                next_node = label.first_hop.to_entity
+                if next_node not in visited:
+                    visited.add(next_node)
+                    queue.append((next_node, dist + get_edge_weight(label.first_hop)))
 
     if min_dist < float("inf"):
         # Cache the computed distance
         result = PathResult(path=[], total_weight=min_dist)
         PathCache.put(cache_key, result)
         return min_dist
+
     return None
