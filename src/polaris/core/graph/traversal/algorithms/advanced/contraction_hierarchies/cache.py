@@ -19,6 +19,19 @@ if TYPE_CHECKING:
     from polaris.core.graph import Graph
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+
+
+class CacheError(Exception):
+    """Base exception for cache-related errors."""
+
+    pass
+
+
+class InvalidValueError(CacheError):
+    """Exception raised when a value cannot be cached."""
+
+    pass
 
 
 @dataclass
@@ -30,14 +43,44 @@ class CacheEntry:
     access_count: int = 0
     size_bytes: int = 0
 
+    @staticmethod
+    def validate_value(value: Any) -> int:
+        """
+        Validate a value can be cached and return its size.
+
+        Args:
+            value: Value to validate
+
+        Returns:
+            Size of value in bytes
+
+        Raises:
+            InvalidValueError: If value cannot be cached
+        """
+        try:
+            # First validate that the value supports len()
+            logger.debug(f"Validating value supports len(): {value!r}")
+            len(value)  # This will raise if value doesn't support len()
+
+            # Then validate we can convert it to a string
+            logger.debug(f"Validating value can be stringified")
+            value_str = str(value)
+
+            # Finally get the encoded size
+            size = len(value_str.encode())
+            logger.debug(f"Value size: {size} bytes")
+            return size
+
+        except Exception as e:
+            logger.debug(f"Value validation failed: {e}")
+            raise InvalidValueError(f"Value must support len() and str(): {e}")
+
     def __post_init__(self):
         """Calculate size if not provided."""
         if self.size_bytes == 0:
-            try:
-                # Rough size estimation
-                self.size_bytes = len(str(self.value).encode())
-            except Exception:
-                self.size_bytes = 100  # Default size
+            logger.debug("CacheEntry post init - calculating size")
+            self.size_bytes = self.validate_value(self.value)
+            logger.debug(f"Size calculated: {self.size_bytes}")
 
 
 class CacheStats:
@@ -60,21 +103,31 @@ class CacheStats:
         with self._lock:
             if stat in self._stats:
                 self._stats[stat] += amount
+                logger.debug(f"Incremented {stat} by {amount}, new value: {self._stats[stat]}")
 
     def set(self, stat: str, value: Any) -> None:
         """Thread-safe set of a statistic."""
         with self._lock:
             if stat in self._stats:
                 self._stats[stat] = value
+                logger.debug(f"Set {stat} to {value}")
 
     def get_all(self) -> Dict[str, Any]:
         """Get a copy of all statistics."""
         with self._lock:
             stats = dict(self._stats)
-            # Calculate derived metrics
+            # Calculate hit ratio from actual hits and misses
             total_requests = stats["hits"] + stats["misses"]
             stats["hit_ratio"] = stats["hits"] / total_requests if total_requests > 0 else 0.0
+            logger.debug(f"Stats snapshot: {stats}")
             return stats
+
+    def reset(self) -> None:
+        """Reset all statistics to zero."""
+        with self._lock:
+            for key in self._stats:
+                self._stats[key] = 0.0 if key == "hit_ratio" else 0
+            logger.debug("Stats reset")
 
 
 class DynamicLRUCache:
@@ -100,10 +153,15 @@ class DynamicLRUCache:
         self._lock = threading.RLock()  # Reentrant lock for nested operations
         self._ttl = ttl_seconds
         self._cleanup_interval = cleanup_interval
-        self._last_cleanup = time.time()
+        self._last_cleanup = 0  # Start at 0 to force first cleanup
         self._max_size_bytes = max_size_bytes
         self._max_memory_percent = max_memory_percent
         self._stats = CacheStats()
+        self._running = True
+
+        logger.debug(
+            f"Cache initialized with TTL={ttl_seconds}s, " f"cleanup_interval={cleanup_interval}s"
+        )
 
         # Start monitoring thread
         self._monitor_thread = threading.Thread(
@@ -121,18 +179,29 @@ class DynamicLRUCache:
         Returns:
             Cached value or None if not found/expired
         """
+        if key is None:
+            logger.debug("Get: key is None")
+            self._stats.increment("misses")
+            return None
+
         try:
             with self._lock:
+                logger.debug(f"Get: key={key!r}")
                 self._maybe_cleanup()
 
                 entry = self._cache.get(key)
                 if entry is None:
+                    logger.debug(f"Get: key {key!r} not found")
                     self._stats.increment("misses")
                     return None
 
                 # Check TTL
-                if time.time() - entry.timestamp > self._ttl:
+                age = time.time() - entry.timestamp
+                logger.debug(f"Entry age: {age}s, TTL: {self._ttl}s")
+                if age > self._ttl:
+                    logger.debug(f"Entry expired, age={age}s > ttl={self._ttl}s")
                     self._remove_entry(key)
+                    self._stats.increment("misses")
                     return None
 
                 # Update access stats and move to end
@@ -140,6 +209,7 @@ class DynamicLRUCache:
                 self._cache.move_to_end(key)
                 self._stats.increment("hits")
 
+                logger.debug(f"Get: returning value for {key!r}")
                 return entry.value
 
         except Exception as e:
@@ -156,27 +226,44 @@ class DynamicLRUCache:
             value: Value to cache
             max_entries: Maximum number of entries to maintain
         """
+        if key is None:
+            logger.debug("Set: key is None")
+            self._stats.increment("errors")
+            return
+
         try:
+            logger.debug(f"Set: key={key!r}, value={value!r}")
+
+            # Validate value before proceeding
+            size_bytes = CacheEntry.validate_value(value)
+            logger.debug(f"Value validated, size={size_bytes}")
+
             with self._lock:
                 # Remove if key exists
                 if key in self._cache:
+                    logger.debug(f"Removing existing entry for {key!r}")
                     self._remove_entry(key)
 
-                # Create new entry
-                entry = CacheEntry(value=value, timestamp=time.time())
-
                 # Check memory constraints
-                if self._would_exceed_memory_limit(entry.size_bytes):
-                    self._enforce_memory_limit(entry.size_bytes)
+                if self._would_exceed_memory_limit(size_bytes):
+                    logger.debug("Enforcing memory limit")
+                    self._enforce_memory_limit(size_bytes)
 
-                # Add new entry
+                # Create and add new entry
+                entry = CacheEntry(value=value, timestamp=time.time(), size_bytes=size_bytes)
                 self._cache[key] = entry
                 self._stats.increment("total_bytes", entry.size_bytes)
+                logger.debug(f"Added entry for {key!r}")
 
                 # Maintain size limit
                 while len(self._cache) > max_entries:
+                    logger.debug("Cache full, removing oldest entry")
                     self._remove_oldest()
 
+        except InvalidValueError:
+            # Don't store invalid values
+            self._stats.increment("errors")
+            logger.error(f"Invalid value for key {key}")
         except Exception as e:
             self._stats.increment("errors")
             logger.error(f"Error setting cache key {key}: {e}")
@@ -186,19 +273,27 @@ class DynamicLRUCache:
         entry = self._cache.pop(key)
         self._stats.increment("evictions")
         self._stats.increment("total_bytes", -entry.size_bytes)
+        logger.debug(f"Removed entry for {key!r}")
 
     def _remove_oldest(self) -> None:
         """Remove the oldest cache entry."""
         if self._cache:
-            _, entry = self._cache.popitem(last=False)
+            key, entry = self._cache.popitem(last=False)
             self._stats.increment("evictions")
             self._stats.increment("total_bytes", -entry.size_bytes)
+            logger.debug(f"Removed oldest entry: {key!r}")
 
     def _would_exceed_memory_limit(self, additional_bytes: int) -> bool:
         """Check if adding bytes would exceed memory limit."""
         if self._max_size_bytes:
             current_bytes = self._stats.get_all()["total_bytes"]
-            return current_bytes + additional_bytes > self._max_size_bytes
+            would_exceed = current_bytes + additional_bytes > self._max_size_bytes
+            logger.debug(
+                f"Memory check: current={current_bytes}, "
+                f"additional={additional_bytes}, "
+                f"would_exceed={would_exceed}"
+            )
+            return would_exceed
         return False
 
     def _enforce_memory_limit(self, needed_bytes: int) -> None:
@@ -209,42 +304,81 @@ class DynamicLRUCache:
     def _maybe_cleanup(self) -> None:
         """Periodically cleanup expired entries."""
         now = time.time()
-        if now - self._last_cleanup < self._cleanup_interval:
-            return
 
-        try:
-            expired_keys = [k for k, v in self._cache.items() if now - v.timestamp > self._ttl]
+        # Check if cleanup is needed
+        needs_cleanup = (
+            now - self._last_cleanup >= self._cleanup_interval
+            or self._last_cleanup == 0  # Force first cleanup
+        )
 
-            for key in expired_keys:
-                self._remove_entry(key)
+        logger.debug(
+            f"Cleanup check: age={now - self._last_cleanup}s, "
+            f"interval={self._cleanup_interval}s, "
+            f"needs_cleanup={needs_cleanup}"
+        )
 
-            self._last_cleanup = now
-            self._stats.increment("cleanups")
+        if needs_cleanup:
+            try:
+                # Find expired entries
+                expired_keys = [k for k, v in self._cache.items() if now - v.timestamp > self._ttl]
 
-            # Update max age stat
-            if self._cache:
-                max_age = max(now - e.timestamp for e in self._cache.values())
-                self._stats.set("max_age", max_age)
+                logger.debug(f"Found {len(expired_keys)} expired entries")
 
-        except Exception as e:
-            self._stats.increment("errors")
-            logger.error(f"Error during cache cleanup: {e}")
+                if expired_keys:
+                    # Remove expired entries
+                    for key in expired_keys:
+                        self._remove_entry(key)
+
+                    # Update cleanup stats after successful removal
+                    self._stats.increment("cleanups")
+                    logger.debug("Cleanup complete")
+
+                    # Update max age stat
+                    if self._cache:
+                        max_age = max(now - e.timestamp for e in self._cache.values())
+                        self._stats.set("max_age", max_age)
+
+                # Always update last cleanup time
+                self._last_cleanup = now
+
+            except Exception as e:
+                self._stats.increment("errors")
+                logger.error(f"Error during cache cleanup: {e}")
 
     def _monitor_cache(self) -> None:
-        """Background monitoring of cache metrics."""
-        while True:
+        """Background monitoring and cleanup of cache metrics."""
+        while self._running:
             try:
+                # First do cleanup
+                with self._lock:
+                    self._maybe_cleanup()
+
+                # Then log stats
                 stats = self._stats.get_all()
                 logger.info("Cache statistics:")
                 for metric, value in stats.items():
                     logger.info(f"  {metric}: {value}")
+
             except Exception as e:
                 logger.error(f"Error monitoring cache: {e}")
+
             time.sleep(self._cleanup_interval)
+
+    def shutdown(self) -> None:
+        """Shutdown the cache and stop monitoring."""
+        logger.debug("Shutting down cache")
+        self._running = False
+        if self._monitor_thread.is_alive():
+            self._monitor_thread.join(timeout=1.0)
 
     def get_stats(self) -> Dict[str, Any]:
         """Get current cache statistics."""
         return self._stats.get_all()
+
+    def reset_stats(self) -> None:
+        """Reset all statistics to zero."""
+        logger.debug("Resetting stats")
+        self._stats.reset()
 
 
 class CacheManager:
@@ -273,6 +407,7 @@ class CacheManager:
         """
         with self._lock:
             if name not in self._caches:
+                logger.debug(f"Creating new cache: {name}")
                 self._caches[name] = DynamicLRUCache(
                     ttl_seconds=ttl_seconds, cleanup_interval=cleanup_interval
                 )
@@ -282,6 +417,13 @@ class CacheManager:
         """Get statistics for all managed caches."""
         with self._lock:
             return {name: cache.get_stats() for name, cache in self._caches.items()}
+
+    def shutdown(self) -> None:
+        """Shutdown all caches."""
+        logger.debug("Shutting down all caches")
+        with self._lock:
+            for cache in self._caches.values():
+                cache.shutdown()
 
 
 def get_cache_size(graph: "Graph") -> int:
