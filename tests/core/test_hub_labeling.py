@@ -162,6 +162,6 @@ def test_memory_efficiency():
     # In a complete graph we expect O(n^2) labels total
     n = len(nodes)
     max_expected_labels = n * (n - 1)  # Theoretical upper bound
-    assert total_labels <= max_expected_labels, (
-        f"Too many labels: {total_labels} " f"(expected <= {max_expected_labels})"
-    )
+    assert (
+        total_labels <= max_expected_labels
+    ), f"Too many labels: {total_labels} (expected <= {max_expected_labels})"

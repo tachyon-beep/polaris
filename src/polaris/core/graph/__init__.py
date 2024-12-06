@@ -10,7 +10,16 @@ This module provides a complete graph implementation with support for:
 """
 
 from contextlib import contextmanager
-from typing import Dict, Generator, Iterator, List, Optional, Set, Type, Union
+from typing import (
+    Any,
+    Dict,
+    Generator,
+    Iterator,
+    List,
+    Optional,
+    Set,
+    Union,
+)
 
 from .base import BaseGraph
 from .state import GraphStateManager, GraphStateView
@@ -193,13 +202,29 @@ class Graph:
         """Get the total number of edges in the graph."""
         return self.state_manager.graph.get_edge_count()
 
+    def _find_shortest_path(
+        self,
+        from_node: str,
+        to_node: str,
+        max_depth: Optional[int] = None,
+        **kwargs: Any,
+    ) -> PathResult:
+        """Helper method to find shortest path."""
+        paths = ShortestPathFinder(self).find_paths(
+            start_node=from_node, end_node=to_node, max_length=max_depth, **kwargs
+        )
+        try:
+            return next(paths)
+        except StopIteration as exc:
+            raise NodeNotFoundError(f"No path exists between {from_node} and {to_node}") from exc
+
     def find_paths(
         self,
         from_node: str,
         to_node: str,
         max_depth: Optional[int] = None,
         path_type: PathType = PathType.SHORTEST,
-        **kwargs,
+        **kwargs: Any,
     ) -> Union[PathResult, Iterator[PathResult]]:
         """
         Find paths between nodes using the specified algorithm.
@@ -217,19 +242,10 @@ class Graph:
             For ALL path type, returns an Iterator[PathResult]
         """
         if path_type in (PathType.ALL, PathType.ALL_PATHS, PathType.FILTERED):
-            finder = AllPathsFinder(self)
-            return finder.find_paths(
+            return AllPathsFinder(self).find_paths(
                 start_node=from_node, end_node=to_node, max_length=max_depth, **kwargs
             )
-        else:
-            finder = ShortestPathFinder(self)
-            paths = finder.find_paths(
-                start_node=from_node, end_node=to_node, max_length=max_depth, **kwargs
-            )
-            try:
-                return next(paths)
-            except StopIteration:
-                raise NodeNotFoundError(f"No path exists between {from_node} and {to_node}")
+        return self._find_shortest_path(from_node, to_node, max_depth, **kwargs)
 
     def clear(self) -> None:
         """Clear the graph."""
