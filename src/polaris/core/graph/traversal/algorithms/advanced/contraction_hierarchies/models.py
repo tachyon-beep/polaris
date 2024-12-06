@@ -77,13 +77,15 @@ class Shortcut:
                 custom_attributes={
                     "original_lower_edge": lower_edge.to_entity,
                     "original_upper_edge": upper_edge.to_entity,
+                    "is_shortcut": True,  # Explicitly mark as shortcut
+                    "via_node": via_node,  # Add via node to custom attributes too
                 },
             ),
             impact_score=impact_score,
-            context=f"Shortcut via {via_node}",  # Keep this for backwards compatibility
+            context=f"Shortcut via {via_node}",  # Keep for backward compatibility
             attributes={
-                "via_node": via_node,  # Add redundant but explicit via_node
-                "path_type": "shortcut",  # Mark explicitly as shortcut
+                "via_node": via_node,
+                "path_type": "shortcut",
             },
         )
 

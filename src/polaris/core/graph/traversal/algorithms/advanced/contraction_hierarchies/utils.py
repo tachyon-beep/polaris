@@ -139,8 +139,12 @@ def unpack_shortcut(shortcut_path: List[Edge], graph: "Graph") -> List[Edge]:
     """
     unpacked_path = []
     for edge in shortcut_path:
-        if edge.relation_type == SHORTCUT_TYPE:
-            # Try multiple ways to get the via node
+        # Check if this is actually a shortcut - regular edges should be passed through
+        if (
+            edge.metadata.custom_attributes.get("is_shortcut")
+            and edge.relation_type == SHORTCUT_TYPE
+        ):
+            # Try multiple ways to get the via node...
             via_node = None
             if edge.attributes and "via_node" in edge.attributes:
                 via_node = edge.attributes["via_node"]
@@ -151,30 +155,24 @@ def unpack_shortcut(shortcut_path: List[Edge], graph: "Graph") -> List[Edge]:
                     pass
 
             if via_node is None:
-                raise GraphOperationError("Invalid shortcut edge: missing via node information")
+                # Not a shortcut, treat as regular edge
+                unpacked_path.append(edge)
+                continue
 
-            # Get component edges
+            # Get component edges...
             lower_edge = graph.get_edge(edge.from_entity, via_node)
             upper_edge = graph.get_edge(via_node, edge.to_entity)
-
-            if lower_edge is None or upper_edge is None:
-                # Try to get original edges from metadata if direct lookup fails
-                if edge.metadata.custom_attributes:
-                    lower_to = edge.metadata.custom_attributes.get("original_lower_edge")
-                    upper_to = edge.metadata.custom_attributes.get("original_upper_edge")
-                    if lower_to:
-                        lower_edge = graph.get_edge(edge.from_entity, lower_to)
-                    if upper_to:
-                        upper_edge = graph.get_edge(upper_to, edge.to_entity)
 
             if lower_edge and upper_edge:
                 # Recursively unpack component edges
                 unpacked_path.extend(unpack_shortcut([lower_edge, upper_edge], graph))
             else:
+                # If we can't unpack a marked shortcut, that's an error
                 raise GraphOperationError(
                     f"Failed to unpack shortcut: missing component edges for {edge.from_entity}->{via_node}->{edge.to_entity}"
                 )
         else:
+            # Not a shortcut, add directly to path
             unpacked_path.append(edge)
 
     return unpacked_path

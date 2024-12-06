@@ -44,13 +44,13 @@ def get_edge_weight(edge: Edge, weight_func: Optional[WeightFunc] = None) -> flo
             raise ValueError("Edge weight must be finite number")
         if weight == 0:  # Zero weights are never allowed
             raise ValueError("Edge weight must be non-zero")
-        # Only enforce positive weights for standard weight functions
-        # Negative weights are allowed for maximization via minimization
+
+        # For functions marked with allow_negative_weights, we don't check sign
         if not getattr(weight_func, "_allow_negative", False) and weight <= 0:
             raise ValueError("Edge weight must be positive")
+
         return float(weight)
     except Exception as e:
-        # Preserve original error message
         raise ValueError(str(e))
 
 
