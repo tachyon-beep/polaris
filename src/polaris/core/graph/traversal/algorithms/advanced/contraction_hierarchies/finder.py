@@ -9,6 +9,7 @@ from typing import Callable, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 import logging
 from copy import deepcopy
 from heapq import heappop, heappush
+from threading import Lock
 
 from polaris.core.exceptions import GraphOperationError
 from polaris.core.graph.traversal.path_models import PathResult
@@ -19,7 +20,7 @@ from polaris.core.graph.traversal.utils import (
     validate_path,
 )
 from polaris.core.models import Edge
-from .models import ContractionState
+from .models import ContractionState, Shortcut
 from .storage import ContractionStorage
 from .utils import unpack_shortcut
 
@@ -38,6 +39,8 @@ class ContractionPathFinder:
     - Bidirectional search
     - Path reconstruction
     - Shortcut unpacking
+    - Cycle prevention
+    - Thread safety
     """
 
     def __init__(
@@ -57,6 +60,20 @@ class ContractionPathFinder:
         self.graph = graph
         self.state = state
         self.storage = storage
+        self._graph_lock = Lock()  # Thread safety for graph operations
+        self._forward_visited = set()  # Global visited set for forward search
+        self._backward_visited = set()  # Global visited set for backward search
+        self._error_messages = {
+            "start_not_found": lambda node: f"Start node {node} not found in graph",
+            "end_not_found": lambda node: f"End node {node} not found in graph",
+            "no_path": lambda start, end: f"No path exists between {start} and {end}",
+            "cycle_detected": lambda node: f"Cycle detected through node {node}",
+        }
+
+    def _reset_visited_sets(self):
+        """Reset visited sets before each path finding operation."""
+        self._forward_visited.clear()
+        self._backward_visited.clear()
 
     def find_path(
         self,
@@ -85,6 +102,9 @@ class ContractionPathFinder:
         Raises:
             GraphOperationError: If no path exists
         """
+        # Reset visited sets at start of path finding
+        self._reset_visited_sets()
+
         if start_node == end_node:
             return PathResult(path=[], total_weight=0.0)
 
@@ -123,15 +143,15 @@ class ContractionPathFinder:
                 except GraphOperationError:
                     continue
 
-            raise GraphOperationError(
-                f"No path satisfying filter exists between {start_node} and {end_node}"
-            )
+            raise GraphOperationError(self._error_messages["no_path"](start_node, end_node))
 
         # No filter, find shortest path
         path = self._find_path(start_node, end_node, weight_func, debug)
         result = create_path_result(path, weight_func)
         if validate:
-            validate_path(path, self.graph, weight_func, max_length, allow_cycles=True)
+            validate_path(
+                path, self.graph, weight_func, max_length, allow_cycles=False
+            )  # Disallow cycles
         return result
 
     def _find_path(
@@ -148,9 +168,9 @@ class ContractionPathFinder:
             logger.debug(f"Available shortcuts: {self.state.shortcuts}")
 
         if not self.graph.has_node(start_node):
-            raise GraphOperationError(f"Start node {start_node} not found in graph")
+            raise GraphOperationError(self._error_messages["start_not_found"](start_node))
         if not self.graph.has_node(end_node):
-            raise GraphOperationError(f"End node {end_node} not found in graph")
+            raise GraphOperationError(self._error_messages["end_not_found"](end_node))
 
         # Initialize searches
         forward_distances: Dict[str, float] = {start_node: 0.0}
@@ -166,7 +186,7 @@ class ContractionPathFinder:
         best_dist = float("inf")
         meeting_node = None
 
-        # Track visited nodes
+        # Track visited nodes for current search
         forward_visited = set()
         backward_visited = set()
 
@@ -230,7 +250,7 @@ class ContractionPathFinder:
             raise
 
         if meeting_node is None:
-            raise GraphOperationError(f"No path exists between {start_node} and {end_node}")
+            raise GraphOperationError(self._error_messages["no_path"](start_node, end_node))
 
         if debug:
             logger.debug(f"Path found with meeting point at {meeting_node}")
@@ -267,7 +287,10 @@ class ContractionPathFinder:
             direction = "forward" if is_forward else "backward"
             logger.debug(f"Expanding {direction} search from {node}")
 
-        # Get neighbors and shortcuts in one pass
+        # Use global visited sets for each direction
+        visited_set = self._forward_visited if is_forward else self._backward_visited
+
+        # Get edges to process
         edges_to_process = []
 
         # Get regular edges
@@ -297,9 +320,46 @@ class ContractionPathFinder:
 
         # Process all edges
         for neighbor, edge in edges_to_process:
+            # Enhanced cycle detection using contracted neighbors
+            is_shortcut = edge.metadata.custom_attributes.get("is_shortcut", False)
+            current_path_set = set(predecessors.keys())
+
+            def _detect_cycle(node: str, path_set: Set[str], visited: Set[str]) -> bool:
+                """
+                Detect cycles in path while considering contracted neighbors.
+
+                Args:
+                    node: Current node to check
+                    path_set: Set of nodes in current path
+                    visited: Set of already visited nodes in this cycle check
+
+                Returns:
+                    bool: True if cycle detected, False otherwise
+                """
+                if node in path_set:
+                    return True
+
+                if node in visited:
+                    return False
+
+                visited.add(node)
+
+                # Check contracted neighbors
+                contracted = self.state.get_contracted_neighbors(node)
+                for neighbor in contracted:
+                    if neighbor in path_set or _detect_cycle(neighbor, path_set, visited):
+                        return True
+
+                return False
+
+            if _detect_cycle(neighbor, current_path_set, set()):
+                if debug:
+                    logger.debug(f"Skipping {neighbor} - would create cycle")
+                continue
+
             # Skip if moving to a lower level node (unless it's a shortcut)
             if (
-                not edge.metadata.custom_attributes.get("is_shortcut", False)
+                not is_shortcut
                 and neighbor in self.state.node_level
                 and node in self.state.node_level
                 and self.state.node_level[neighbor] < self.state.node_level[node]
@@ -336,6 +396,10 @@ class ContractionPathFinder:
                 distances[neighbor] = new_dist
                 predecessors[neighbor] = (node, edge)
                 heappush(pq, (new_dist, neighbor))
+
+            # Mark as visited for regular edges
+            if not is_shortcut:
+                visited_set.add(neighbor)
 
     def _process_forward_search(
         self,

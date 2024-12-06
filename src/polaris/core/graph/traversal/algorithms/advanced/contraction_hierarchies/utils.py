@@ -7,6 +7,9 @@ shortcut necessity checking, and path validation.
 
 from typing import Dict, List, Optional, Set, TYPE_CHECKING
 import logging
+from functools import lru_cache
+from threading import Lock
+from hashlib import sha256
 
 from polaris.core.graph.traversal.utils import WeightFunc, get_edge_weight
 from polaris.core.models import Edge
@@ -20,6 +23,48 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
 EPSILON = 1e-10  # Consistent epsilon value for floating point comparisons
+
+# Global locks for thread safety
+_graph_lock = Lock()
+_cache_lock = Lock()
+
+
+def _compute_graph_hash(graph: "Graph", source: str, target: str, via: str) -> str:
+    """
+    Compute a stable hash for graph state and query parameters.
+
+    Args:
+        graph: Graph instance
+        source: Source node
+        target: Target node
+        via: Node being contracted
+
+    Returns:
+        String hash representing current state
+    """
+    # Get relevant subgraph edges (only those that could affect the witness path)
+    relevant_edges = []
+    visited = {source}
+    to_visit = [source]
+
+    while to_visit:
+        node = to_visit.pop(0)
+        for neighbor in graph.get_neighbors(node):
+            if neighbor == via:  # Skip the node being contracted
+                continue
+            edge = graph.get_edge(node, neighbor)
+            if edge and neighbor not in visited:
+                relevant_edges.append((edge.from_entity, edge.to_entity, edge.metadata.weight))
+                visited.add(neighbor)
+                if neighbor != target:  # Don't explore beyond target
+                    to_visit.append(neighbor)
+
+    # Sort for stable hash
+    relevant_edges.sort()
+
+    # Combine with query parameters
+    state = (relevant_edges, source, target, via)
+    return sha256(str(state).encode()).hexdigest()
 
 
 def calculate_node_importance(
@@ -48,63 +93,60 @@ def calculate_node_importance(
     Returns:
         Importance score (higher means more important)
     """
-    # Get original edges
-    original_edges = len(list(graph.get_neighbors(node)))
+    with _graph_lock:
+        # Get original edges
+        original_edges = len(list(graph.get_neighbors(node)))
 
-    # Get contracted neighbor count
-    contracted_count = len(contracted_neighbors.get(node, set()))
+        # Get contracted neighbor count
+        contracted_count = len(contracted_neighbors.get(node, set()))
 
-    # Get current level
-    level = node_level.get(node, 0)
+        # Get current level
+        level = node_level.get(node, 0)
 
-    # Calculate importance based on multiple factors
-    importance = (
-        5 * shortcut_count  # Weight the cost of adding shortcuts
-        + 2 * contracted_count  # Consider neighborhood complexity
-        + level  # Preserve hierarchy levels
-        + original_edges  # Base importance on connectivity
-    )
+        # Calculate importance based on multiple factors
+        importance = (
+            5 * shortcut_count  # Weight the cost of adding shortcuts
+            + 2 * contracted_count  # Consider neighborhood complexity
+            + level  # Preserve hierarchy levels
+            + original_edges  # Base importance on connectivity
+        )
 
-    logger.debug(
-        f"Node {node} importance calculation:\n"
-        f"  Shortcut count: {shortcut_count}\n"
-        f"  Contracted neighbors: {contracted_count}\n"
-        f"  Level: {level}\n"
-        f"  Original edges: {original_edges}\n"
-        f"  Final importance: {importance}"
-    )
+        logger.debug(
+            f"Node {node} importance calculation:\n"
+            f"  Shortcut count: {shortcut_count}\n"
+            f"  Contracted neighbors: {contracted_count}\n"
+            f"  Level: {level}\n"
+            f"  Original edges: {original_edges}\n"
+            f"  Final importance: {importance}"
+        )
 
-    return importance
+        return importance
 
 
-def is_shortcut_necessary(
+@lru_cache(maxsize=10000)
+def _cached_witness_search(
+    graph_hash: str,
     source: str,
     target: str,
     via: str,
     shortcut_weight: float,
     graph: "Graph",
-    weight_func: Optional[WeightFunc] = None,
 ) -> bool:
     """
-    Determine if shortcut is necessary using witness search.
+    Cached implementation of witness path search.
 
     Args:
+        graph_hash: Hash of relevant graph state
         source: Source node
         target: Target node
         via: Node being contracted
         shortcut_weight: Weight of potential shortcut
         graph: Graph instance
-        weight_func: Optional custom weight function
 
     Returns:
         True if shortcut is necessary, False if witness path exists
     """
     from heapq import heappop, heappush
-
-    logger.debug(
-        f"Checking if shortcut {source}->{target} (via {via}) "
-        f"with weight {shortcut_weight} is necessary"
-    )
 
     # Initialize distances and priority queue
     distances = {source: 0.0}
@@ -139,7 +181,7 @@ def is_shortcut_necessary(
             if not edge:
                 continue
 
-            edge_weight = get_edge_weight(edge, weight_func)
+            edge_weight = edge.metadata.weight  # Use raw weight for caching
             new_dist = dist + edge_weight
 
             # Use consistent epsilon comparison
@@ -154,6 +196,57 @@ def is_shortcut_necessary(
     # No witness path found within weight limit
     logger.debug("No witness path found, shortcut is necessary")
     return True
+
+
+def is_shortcut_necessary(
+    source: str,
+    target: str,
+    via: str,
+    shortcut_weight: float,
+    graph: "Graph",
+    weight_func: Optional[WeightFunc] = None,
+) -> bool:
+    """
+    Determine if shortcut is necessary using witness search.
+    Uses LRU cache to avoid redundant calculations.
+
+    Args:
+        source: Source node
+        target: Target node
+        via: Node being contracted
+        shortcut_weight: Weight of potential shortcut
+        graph: Graph instance
+        weight_func: Optional custom weight function
+
+    Returns:
+        True if shortcut is necessary, False if witness path exists
+    """
+    logger.debug(
+        f"Checking if shortcut {source}->{target} (via {via}) "
+        f"with weight {shortcut_weight} is necessary"
+    )
+
+    try:
+        # Compute hash of relevant graph state
+        graph_hash = _compute_graph_hash(graph, source, target, via)
+
+        # Use cached witness search
+        with _cache_lock:
+            is_necessary = _cached_witness_search(
+                graph_hash, source, target, via, shortcut_weight, graph
+            )
+
+            # Log cache statistics periodically
+            cache_info = _cached_witness_search.cache_info()
+            if cache_info.hits % 1000 == 0:  # Log every 1000 hits
+                logger.info(f"Witness search cache stats: {cache_info}")
+
+            return is_necessary
+
+    except Exception as e:
+        logger.error(f"Error in shortcut necessity check: {e}")
+        # Default to creating shortcut on error
+        return True
 
 
 def unpack_shortcut(shortcut_path: List[Edge], graph: "Graph") -> List[Edge]:
@@ -178,19 +271,16 @@ def unpack_shortcut(shortcut_path: List[Edge], graph: "Graph") -> List[Edge]:
             edge.metadata.custom_attributes.get("is_shortcut")
             and edge.relation_type == SHORTCUT_TYPE
         ):
-            # Try multiple ways to get the via node...
-            via_node = None
-            if edge.attributes and "via_node" in edge.attributes:
-                via_node = edge.attributes["via_node"]
-            elif edge.context and "Shortcut via " in edge.context:
+            # Get via node from attributes first, then context as fallback
+            via_node = edge.attributes.get("via_node")
+            if via_node is None and edge.context:
                 try:
                     via_node = edge.context.split()[-1]
                 except (AttributeError, IndexError):
-                    pass
+                    via_node = None
 
             if via_node is None:
-                # Not a shortcut, treat as regular edge
-                logger.debug(
+                logger.warning(
                     f"Edge {edge.from_entity}->{edge.to_entity} "
                     f"marked as shortcut but missing via node"
                 )
@@ -199,9 +289,10 @@ def unpack_shortcut(shortcut_path: List[Edge], graph: "Graph") -> List[Edge]:
 
             logger.debug(f"Unpacking shortcut {edge.from_entity}->{edge.to_entity} via {via_node}")
 
-            # Get component edges...
-            lower_edge = graph.get_edge(edge.from_entity, via_node)
-            upper_edge = graph.get_edge(via_node, edge.to_entity)
+            # Get component edges with thread safety
+            with _graph_lock:
+                lower_edge = graph.get_edge(edge.from_entity, via_node)
+                upper_edge = graph.get_edge(via_node, edge.to_entity)
 
             if lower_edge and upper_edge:
                 # Recursively unpack component edges
@@ -236,45 +327,49 @@ def validate_shortcuts(shortcuts: Dict[str, Edge], graph: "Graph") -> bool:
         True if shortcuts are valid, False otherwise
     """
     logger.debug("Validating shortcuts...")
-    for edge in shortcuts.values():
-        if edge.relation_type != SHORTCUT_TYPE:
-            logger.debug(
-                f"Invalid shortcut {edge.from_entity}->{edge.to_entity}: "
-                f"wrong relation type {edge.relation_type}"
-            )
-            return False
 
-        # Extract via node from context
-        if not edge.context or not edge.context.startswith("Shortcut via "):
-            logger.debug(
-                f"Invalid shortcut {edge.from_entity}->{edge.to_entity}: "
-                f"missing or invalid context"
-            )
-            return False
+    with _graph_lock:
+        for edge in shortcuts.values():
+            if edge.relation_type != SHORTCUT_TYPE:
+                logger.debug(
+                    f"Invalid shortcut {edge.from_entity}->{edge.to_entity}: "
+                    f"wrong relation type {edge.relation_type}"
+                )
+                return False
 
-        via_node = edge.context.split()[-1]
+            # Get via node from attributes first, then context as fallback
+            via_node = edge.attributes.get("via_node")
+            if via_node is None and edge.context:
+                try:
+                    via_node = edge.context.split()[-1]
+                except (AttributeError, IndexError):
+                    logger.debug(
+                        f"Invalid shortcut {edge.from_entity}->{edge.to_entity}: "
+                        f"missing or invalid via node"
+                    )
+                    return False
 
-        # Check component edges exist
-        lower_edge = graph.get_edge(edge.from_entity, via_node)
-        upper_edge = graph.get_edge(via_node, edge.to_entity)
+            # Check component edges exist
+            lower_edge = graph.get_edge(edge.from_entity, via_node)
+            upper_edge = graph.get_edge(via_node, edge.to_entity)
 
-        if not lower_edge or not upper_edge:
-            logger.debug(
-                f"Invalid shortcut {edge.from_entity}->{edge.to_entity}: "
-                f"missing component edges via {via_node}"
-            )
-            return False
+            if not lower_edge or not upper_edge:
+                logger.debug(
+                    f"Invalid shortcut {edge.from_entity}->{edge.to_entity}: "
+                    f"missing component edges via {via_node}"
+                )
+                return False
 
-        # Verify weight consistency
-        shortcut_weight = edge.metadata.weight
-        actual_weight = lower_edge.metadata.weight + upper_edge.metadata.weight
+            # Verify weight consistency
+            shortcut_weight = edge.metadata.weight
+            actual_weight = lower_edge.metadata.weight + upper_edge.metadata.weight
 
-        if abs(shortcut_weight - actual_weight) > EPSILON:
-            logger.debug(
-                f"Invalid shortcut {edge.from_entity}->{edge.to_entity}: "
-                f"weight mismatch {shortcut_weight} != {actual_weight}"
-            )
-            return False
+            if abs(shortcut_weight - actual_weight) > EPSILON:
+                logger.debug(
+                    f"Invalid shortcut {edge.from_entity}->{edge.to_entity}: "
+                    f"weight mismatch {shortcut_weight} != {actual_weight}"
+                )
+                return False
 
     logger.debug("All shortcuts valid")
     return True

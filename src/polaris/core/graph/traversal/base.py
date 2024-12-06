@@ -1,7 +1,7 @@
 """Base classes for graph traversal algorithms."""
 
 from abc import ABC, abstractmethod
-from typing import Any, Generic, Iterator, List, Optional, TypeVar, Union, cast
+from typing import Any, Generic, Iterator, List, Optional, TypeVar, cast
 
 from polaris.core.exceptions import GraphOperationError, NodeNotFoundError
 from .cache import PathCache
@@ -101,7 +101,7 @@ class PathFinding(Generic[T]):
         graph: Optional[Any] = None,
     ) -> T:
         """Create path result from path."""
-        return cast(T, create_path_result(path, weight_func, graph))
+        return cast(T, create_path_result(path, weight_func))
 
     @staticmethod
     def get_cache_metrics() -> dict:
@@ -297,7 +297,7 @@ class PathFinding(Generic[T]):
         filter_func: Optional[PathFilter] = None,
         weight_func: Optional[WeightFunc] = None,
         **kwargs,
-    ) -> Union[T, Iterator[T]]:
+    ) -> T | Iterator[T]:
         """Generic path finding interface."""
         from .algorithms.all_paths import AllPathsFinder
         from .algorithms.shortest_path import ShortestPathFinder

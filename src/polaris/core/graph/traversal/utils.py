@@ -80,10 +80,6 @@ def is_better_cost(new_cost: float, old_cost: float) -> bool:
     assert isinstance(new_cost, float) and isinstance(old_cost, float), "Costs must be floats"
     # For both standard and inverse weights, smaller total is better
     # Use relative comparison for floating point numbers
-    # This handles both small and large differences appropriately
-
-
-def is_better_cost(new_cost: float, old_cost: float) -> bool:
     relative_diff = abs(new_cost - old_cost) / max(abs(new_cost), abs(old_cost))
     if relative_diff < EPSILON:
         return True  # When costs are very close, prefer the new path
@@ -105,9 +101,7 @@ def calculate_path_weight(path: List[Edge], weight_func: Optional[WeightFunc] = 
     return total
 
 
-def create_path_result(
-    path: List[Edge], weight_func: Optional[WeightFunc], graph: Optional["Graph"] = None
-) -> PathResult:
+def create_path_result(path: List[Edge], weight_func: Optional[WeightFunc] = None) -> PathResult:
     """Create PathResult from path."""
     total_weight = calculate_path_weight(path, weight_func)
     # Debug: Print the path being created

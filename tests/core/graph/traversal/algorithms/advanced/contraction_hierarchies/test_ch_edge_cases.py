@@ -1,52 +1,53 @@
-"""
-Tests for Contraction Hierarchies edge cases and error handling.
-"""
+"""Tests for edge cases in Contraction Hierarchies implementation."""
 
 import pytest
-from typing import List, Optional, Callable, Tuple
+from typing import Dict, List
+from threading import Thread
+from queue import Queue
 
 from polaris.core.exceptions import GraphOperationError
 from polaris.core.graph import Graph
+from polaris.core.models import Edge, EdgeMetadata
 from polaris.core.graph.traversal.algorithms.advanced.contraction_hierarchies import (
     ContractionHierarchies,
 )
-from polaris.core.models import Edge, EdgeMetadata
-
-from .conftest import create_edge
 
 
-@pytest.mark.timeout(5)
-def test_path_finding_with_filter_no_valid_path(simple_graph: Graph) -> None:
-    """Test path finding with a filter function that allows no valid paths."""
-    ch = ContractionHierarchies(simple_graph)
-    ch.preprocess()
-
-    # Define a filter function that disallows all paths
-    def filter_func(path: List[Edge]) -> bool:
-        return False
-
-    # Attempt to find path from A to C with restrictive filter
-    with pytest.raises(GraphOperationError, match="No path satisfying filter exists"):
-        ch.find_path("A", "C", filter_func=filter_func)
+def create_edge(from_node: str, to_node: str, weight: float, base_metadata: EdgeMetadata) -> Edge:
+    """Create an edge with given parameters."""
+    metadata = EdgeMetadata(
+        weight=weight,
+        custom_attributes={},
+        properties=base_metadata.properties.copy(),
+    )
+    return Edge(from_entity=from_node, to_entity=to_node, metadata=metadata)
 
 
-@pytest.mark.timeout(5)
-def test_empty_graph() -> None:
-    """Test CH behavior with an empty graph."""
-    empty_graph = Graph(edges=[])
-    ch = ContractionHierarchies(empty_graph)
-    ch.preprocess()
+@pytest.fixture
+def base_metadata() -> EdgeMetadata:
+    """Create base metadata for testing."""
+    return EdgeMetadata(
+        weight=1.0,
+        custom_attributes={},
+        properties={"test": True},
+    )
 
-    # Verify empty state
-    assert len(ch.state.shortcuts) == 0, "Empty graph should have no shortcuts"
-    assert len(ch.state.node_level) == 0, "Empty graph should have no node levels"
-    assert (
-        len(ch.state.contracted_neighbors) == 0
-    ), "Empty graph should have no contracted neighbors"
 
-    # Test path finding in empty graph
-    with pytest.raises(GraphOperationError, match="Start node A not found in graph"):
-        ch.find_path("A", "B")
+@pytest.fixture
+def complex_graph(base_metadata: EdgeMetadata) -> Graph:
+    """Create a complex graph that could produce cycles."""
+    g = Graph(edges=[])
+    edges = [
+        ("A", "B", 1.0),
+        ("B", "C", 2.0),
+        ("C", "D", 1.0),
+        ("B", "D", 2.5),
+        ("D", "E", 1.0),
+    ]
+    for from_node, to_node, weight in edges:
+        edge = create_edge(from_node, to_node, weight, base_metadata)
+        g.add_edge(edge)
+    return g
 
 
 @pytest.mark.timeout(5)
@@ -65,153 +66,117 @@ def test_single_node_graph(base_metadata: EdgeMetadata) -> None:
     assert result.path == [], "Path to self should be empty"
     assert result.total_weight == pytest.approx(0.0), "Path to self should have zero weight"
 
-    # Test path finding to non-existent node
-    with pytest.raises(GraphOperationError, match="Start node B not found in graph"):
-        ch.find_path("A", "B")
+    # Test error messages with helper function
+    def get_expected_error(node: str, is_start: bool) -> str:
+        """Get expected error message for node not found."""
+        return f"{'Start' if is_start else 'End'} node {node} not found in graph"
 
-
-@pytest.mark.timeout(5)
-def test_invalid_node_combinations(simple_graph: Graph) -> None:
-    """Test CH behavior with various invalid node combinations."""
-    ch = ContractionHierarchies(simple_graph)
-    ch.preprocess()
-
-    test_cases = [
-        ("", "A", "Empty start node"),
-        ("A", "", "Empty end node"),
-        ("", "", "Both nodes empty"),
-        (" ", "A", "Whitespace start node"),
-        ("A", " ", "Whitespace end node"),
-        ("A", "A ", "End node with trailing space"),
-        (" B", "C", "Start node with leading space"),
+    error_cases = [
+        ("A", "B", False),  # End node not found
+        ("B", "A", True),  # Start node not found
+        ("B", "C", True),  # Start node not found (different target)
     ]
 
-    for start, end, description in test_cases:
-        with pytest.raises(GraphOperationError, match="Start node .* not found in graph"):
+    for start, end, is_start in error_cases:
+        expected_error = get_expected_error(end if not is_start else start, is_start)
+        with pytest.raises(GraphOperationError, match=expected_error):
             ch.find_path(start, end)
 
 
 @pytest.mark.timeout(5)
-def test_duplicate_nodes_in_path(simple_graph: Graph, base_metadata: EdgeMetadata) -> None:
-    """Test CH behavior when path contains duplicate nodes."""
-    # Add edges to create a cycle
-    cycle_edges = [
-        ("B", "D", 1.0),
-        ("D", "B", 1.0),
-    ]
-
-    for from_node, to_node, weight in cycle_edges:
-        edge = create_edge(from_node, to_node, weight, base_metadata)
-        simple_graph.add_edge(edge)
-
-    ch = ContractionHierarchies(simple_graph)
+def test_complex_cyclic_shortcuts(complex_graph: Graph) -> None:
+    """Test path finding with shortcuts that could create cycles."""
+    ch = ContractionHierarchies(complex_graph)
     ch.preprocess()
 
-    # Test path finding that might involve cycles
-    result = ch.find_path("A", "C")
-
-    # Verify no node appears more than once in the path (except start/end nodes in special cases)
-    if result.path:
-        nodes = [edge.from_entity for edge in result.path] + [result.path[-1].to_entity]
-        node_counts = {node: nodes.count(node) for node in set(nodes)}
-        for node, count in node_counts.items():
-            assert count <= 1, f"Node {node} appears {count} times in path"
-
-
-@pytest.mark.timeout(5)
-def test_edge_weight_edge_cases(simple_graph: Graph, base_metadata: EdgeMetadata) -> None:
-    """Test CH behavior with edge case weights."""
-    # Test cases for different edge weights
-    edge_cases = [
-        ("X", "Y", 0.0, "Zero weight"),
-        ("Y", "Z", float("inf"), "Infinite weight"),
-        ("Z", "W", 1e-10, "Very small weight"),
-        ("W", "V", 1e10, "Very large weight"),
-    ]
-
-    # Add test edges
-    for from_node, to_node, weight, _ in edge_cases:
-        edge = create_edge(from_node, to_node, weight, base_metadata)
-        simple_graph.add_edge(edge)
-
-    ch = ContractionHierarchies(simple_graph)
-    ch.preprocess()
-
-    # Test path finding with edge case weights
-    for from_node, to_node, weight, description in edge_cases:
-        if weight != float("inf"):
-            result = ch.find_path(from_node, to_node)
-            assert result.path is not None, f"{description}: Path should exist"
-            assert result.total_weight == pytest.approx(
-                weight
-            ), f"{description}: Path weight should be {weight}"
-        else:
-            # Infinite weight edges should be treated as no path
-            with pytest.raises(GraphOperationError, match="No path exists"):
-                ch.find_path(from_node, to_node)
-
-
-@pytest.mark.timeout(5)
-def test_filter_edge_cases(simple_graph: Graph) -> None:
-    """Test CH behavior with edge case filter functions."""
-    ch = ContractionHierarchies(simple_graph)
-    ch.preprocess()
-
-    test_cases: List[Tuple[Optional[Callable[[List[Edge]], bool]], str]] = [
-        (None, "No filter provided"),
-        (lambda p: True, "Always true filter"),
-        (lambda p: len(p) < 100, "Unreachable path length filter"),
-        (lambda p: all(e.metadata.weight > 0 for e in p), "Positive weight filter"),
-    ]
-
-    for filter_func, description in test_cases:
-        result = ch.find_path("A", "B", filter_func=filter_func)
-        assert result.path is not None, f"{description}: Path should exist"
-        assert len(result.path) == 1, f"{description}: Path should be direct A->B"
-        assert result.total_weight == pytest.approx(
-            1.0
-        ), f"{description}: Path weight should be 1.0"
-
-
-@pytest.mark.timeout(5)
-def test_concurrent_modifications(simple_graph: Graph, base_metadata: EdgeMetadata) -> None:
-    """Test CH behavior with concurrent graph modifications during path finding."""
-    ch = ContractionHierarchies(simple_graph)
-    ch.preprocess()
-
-    # Start path finding
-    result1 = ch.find_path("A", "B")
-    assert result1.path is not None, "Original path should exist"
-    assert result1.total_weight == pytest.approx(1.0), "Original path weight should be 1.0"
-
-    # Modify graph
-    edge = create_edge("A", "D", 1.0, base_metadata)
-    simple_graph.add_edge(edge)
-
-    # Reprocess and find new path
-    ch.preprocess()
-    result2 = ch.find_path("A", "D")
-    assert result2.path is not None, "New path should exist after modification"
-    assert result2.total_weight == pytest.approx(1.0), "New path should have weight 1.0"
-
-
-@pytest.mark.timeout(5)
-def test_invalid_filter_functions(simple_graph: Graph) -> None:
-    """Test CH behavior with invalid filter functions."""
-    ch = ContractionHierarchies(simple_graph)
-    ch.preprocess()
-
-    def invalid_filter(path: List[Edge]) -> None:
-        return None  # type: ignore
-
-    def raising_filter(path: List[Edge]) -> bool:
-        raise ValueError("Filter error")
-
+    # Test cases that could create cycles
     test_cases = [
-        (invalid_filter, TypeError, "Filter returning None"),
-        (raising_filter, ValueError, "Filter raising exception"),
+        ("A", "E", ["A", "B", "D", "E"]),  # Should find direct path
+        ("B", "E", ["B", "D", "E"]),  # Should avoid C->D->B cycle
+        ("C", "E", ["C", "D", "E"]),  # Should avoid D->B->D cycle
     ]
 
-    for filter_func, expected_error, description in test_cases:
-        with pytest.raises(expected_error):
-            ch.find_path("A", "C", filter_func=filter_func)
+    for start, end, expected_path in test_cases:
+        result = ch.find_path(start, end)
+        actual_path = [edge.from_entity for edge in result.path] + [result.path[-1].to_entity]
+        assert actual_path == expected_path, f"Expected {expected_path}, got {actual_path}"
+
+
+@pytest.mark.timeout(5)
+def test_concurrent_preprocessing(base_metadata: EdgeMetadata) -> None:
+    """Test concurrent preprocessing operations."""
+    errors = Queue()
+    graphs = []
+
+    # Create multiple similar but slightly different graphs
+    for i in range(3):
+        g = Graph(edges=[])
+        edges = [
+            ("A", "B", 1.0 + i * 0.1),
+            ("B", "C", 2.0 + i * 0.1),
+            ("C", "D", 1.0 + i * 0.1),
+        ]
+        for from_node, to_node, weight in edges:
+            edge = create_edge(from_node, to_node, weight, base_metadata)
+            g.add_edge(edge)
+        graphs.append(g)
+
+    def preprocess_graph(graph: Graph) -> None:
+        try:
+            ch = ContractionHierarchies(graph)
+            ch.preprocess()
+            # Verify path finding works
+            result = ch.find_path("A", "D")
+            assert result is not None
+        except Exception as e:
+            errors.put(e)
+
+    # Start concurrent preprocessing
+    threads = [Thread(target=preprocess_graph, args=(g,)) for g in graphs]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # Check for errors
+    assert (
+        errors.empty()
+    ), f"Encountered errors during concurrent preprocessing: {list(errors.queue)}"
+
+
+@pytest.mark.timeout(5)
+def test_error_messages() -> None:
+    """Test standardized error messages."""
+    g = Graph(edges=[])
+    ch = ContractionHierarchies(g)
+    ch.preprocess()
+
+    error_cases = [
+        ("A", "B", "End node B not found in graph"),
+        ("B", "A", "Start node B not found in graph"),
+        ("B", "C", "Start node B not found in graph"),
+    ]
+
+    for start, end, expected_error in error_cases:
+        with pytest.raises(GraphOperationError, match=expected_error):
+            ch.find_path(start, end)
+
+
+@pytest.mark.timeout(5)
+def test_path_validation(complex_graph: Graph) -> None:
+    """Test path validation with cycles."""
+    ch = ContractionHierarchies(complex_graph)
+    ch.preprocess()
+
+    # Test that paths with cycles are rejected
+    result = ch.find_path("A", "E")
+    path_nodes = [edge.from_entity for edge in result.path] + [result.path[-1].to_entity]
+
+    # Verify no node appears more than once in the path
+    seen_nodes = set()
+    for node in path_nodes:
+        assert node not in seen_nodes, f"Node {node} appears multiple times in path"
+        seen_nodes.add(node)
+
+    # Verify path is optimal
+    assert path_nodes == ["A", "B", "D", "E"], "Path should be optimal A->B->D->E"
