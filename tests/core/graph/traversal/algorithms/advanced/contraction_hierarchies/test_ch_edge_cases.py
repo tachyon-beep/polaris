@@ -1,35 +1,55 @@
 """Tests for edge cases in Contraction Hierarchies implementation."""
 
 import pytest
-from typing import Dict, List
+import time
+from typing import Dict, List, Set
 from threading import Thread
 from queue import Queue
+import concurrent.futures
+from datetime import datetime
 
 from polaris.core.exceptions import GraphOperationError
 from polaris.core.graph import Graph
 from polaris.core.models import Edge, EdgeMetadata
+from polaris.core.enums import RelationType
 from polaris.core.graph.traversal.algorithms.advanced.contraction_hierarchies import (
     ContractionHierarchies,
+)
+from polaris.core.graph.traversal.algorithms.advanced.contraction_hierarchies.utils import (
+    get_performance_stats,
 )
 
 
 def create_edge(from_node: str, to_node: str, weight: float, base_metadata: EdgeMetadata) -> Edge:
     """Create an edge with given parameters."""
     metadata = EdgeMetadata(
+        created_at=base_metadata.created_at,
+        last_modified=base_metadata.last_modified,
+        confidence=base_metadata.confidence,
+        source=base_metadata.source,
         weight=weight,
-        custom_attributes={},
-        properties=base_metadata.properties.copy(),
+        custom_attributes=base_metadata.custom_attributes.copy(),
     )
-    return Edge(from_entity=from_node, to_entity=to_node, metadata=metadata)
+    return Edge(
+        from_entity=from_node,
+        to_entity=to_node,
+        relation_type=RelationType.RELATES_TO,
+        metadata=metadata,
+        impact_score=0.5,
+    )
 
 
 @pytest.fixture
 def base_metadata() -> EdgeMetadata:
     """Create base metadata for testing."""
+    now = datetime.now()
     return EdgeMetadata(
+        created_at=now,
+        last_modified=now,
+        confidence=1.0,
+        source="test",
         weight=1.0,
-        custom_attributes={},
-        properties={"test": True},
+        custom_attributes={"test": True},
     )
 
 
@@ -47,6 +67,24 @@ def complex_graph(base_metadata: EdgeMetadata) -> Graph:
     for from_node, to_node, weight in edges:
         edge = create_edge(from_node, to_node, weight, base_metadata)
         g.add_edge(edge)
+    return g
+
+
+@pytest.fixture
+def large_graph(base_metadata: EdgeMetadata) -> Graph:
+    """Create a larger graph for performance testing."""
+    g = Graph(edges=[])
+    # Create a grid-like graph
+    size = 10
+    for i in range(size):
+        for j in range(size):
+            node = f"{i},{j}"
+            if i < size - 1:
+                edge = create_edge(node, f"{i+1},{j}", 1.0, base_metadata)
+                g.add_edge(edge)
+            if j < size - 1:
+                edge = create_edge(node, f"{i},{j+1}", 1.0, base_metadata)
+                g.add_edge(edge)
     return g
 
 
@@ -180,3 +218,150 @@ def test_path_validation(complex_graph: Graph) -> None:
 
     # Verify path is optimal
     assert path_nodes == ["A", "B", "D", "E"], "Path should be optimal A->B->D->E"
+
+
+@pytest.mark.timeout(10)
+def test_performance_monitoring(large_graph: Graph) -> None:
+    """Test performance monitoring capabilities."""
+    ch = ContractionHierarchies(large_graph)
+    ch.preprocess()
+
+    # Perform multiple path findings to generate metrics
+    start_nodes = ["0,0", "0,5", "5,0"]
+    end_nodes = ["9,9", "9,5", "5,9"]
+
+    for start, end in zip(start_nodes, end_nodes):
+        ch.find_path(start, end)
+
+    # Get performance metrics
+    metrics = get_performance_stats()
+
+    # Verify metrics structure
+    assert "path_finding_time" in metrics
+    assert "witness_search_time" in metrics
+    assert "shortcut_necessity_check_time" in metrics
+
+    # Verify metric contents
+    for metric_name, stats in metrics.items():
+        assert "avg" in stats
+        assert "min" in stats
+        assert "max" in stats
+        assert "std" in stats
+        assert "count" in stats
+        assert stats["count"] > 0
+
+
+@pytest.mark.timeout(10)
+def test_cache_behavior(large_graph: Graph) -> None:
+    """Test caching behavior and efficiency."""
+    ch = ContractionHierarchies(large_graph)
+    ch.preprocess()
+
+    # First path finding should populate cache
+    start_time = time.time()
+    first_result = ch.find_path("0,0", "9,9")
+    first_duration = time.time() - start_time
+
+    # Second path finding should use cache
+    start_time = time.time()
+    second_result = ch.find_path("0,0", "9,9")
+    second_duration = time.time() - start_time
+
+    # Verify results are identical
+    assert len(first_result.path) == len(second_result.path)
+    assert first_result.total_weight == second_result.total_weight
+
+    # Second query should be faster due to caching
+    assert second_duration < first_duration
+
+
+@pytest.mark.timeout(15)
+def test_concurrent_path_finding(large_graph: Graph) -> None:
+    """Test concurrent path finding operations."""
+    ch = ContractionHierarchies(large_graph)
+    ch.preprocess()
+
+    def find_paths(start_nodes: Set[str], end_nodes: Set[str]) -> List[float]:
+        """Find paths between multiple node pairs."""
+        results = []
+        for start in start_nodes:
+            for end in end_nodes:
+                result = ch.find_path(start, end)
+                results.append(result.total_weight)
+        return results
+
+    # Create different node sets for each thread
+    thread1_starts = {"0,0", "0,5"}
+    thread1_ends = {"9,9", "9,5"}
+    thread2_starts = {"5,0", "5,5"}
+    thread2_ends = {"9,0", "9,5"}
+
+    # Run path finding concurrently
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        future1 = executor.submit(find_paths, thread1_starts, thread1_ends)
+        future2 = executor.submit(find_paths, thread2_starts, thread2_ends)
+
+        # Get results
+        results1 = future1.result()
+        results2 = future2.result()
+
+    # Verify results
+    assert len(results1) == len(thread1_starts) * len(thread1_ends)
+    assert len(results2) == len(thread2_starts) * len(thread2_ends)
+    assert all(w > 0 for w in results1 + results2)
+
+
+@pytest.mark.timeout(10)
+def test_memory_management(large_graph: Graph) -> None:
+    """Test memory management and cleanup."""
+    ch = ContractionHierarchies(large_graph)
+    ch.preprocess()
+
+    # Get initial memory stats
+    initial_stats = ch.storage.get_memory_usage()
+
+    # Perform operations that should affect memory
+    for _ in range(5):
+        ch.find_path("0,0", "9,9")
+
+    # Get updated memory stats
+    updated_stats = ch.storage.get_memory_usage()
+
+    # Verify memory tracking
+    assert "shortcuts" in updated_stats
+    assert "node_levels" in updated_stats
+    assert updated_stats["shortcuts"] >= initial_stats["shortcuts"]
+
+    # Test cleanup
+    ch.storage.clear()
+    cleared_stats = ch.storage.get_memory_usage()
+    assert cleared_stats["shortcuts"] == 0
+    assert cleared_stats["node_levels"] == 0
+
+
+@pytest.mark.timeout(5)
+def test_error_handling_edge_cases(complex_graph: Graph) -> None:
+    """Test error handling for various edge cases."""
+    ch = ContractionHierarchies(complex_graph)
+    ch.preprocess()
+
+    # Test invalid node combinations
+    with pytest.raises(GraphOperationError, match="Start node.*not found"):
+        ch.find_path("NonExistent", "A")
+
+    with pytest.raises(GraphOperationError, match="End node.*not found"):
+        ch.find_path("A", "NonExistent")
+
+    # Test with None values
+    with pytest.raises(Exception):  # Type error or value error
+        ch.find_path(None, "A")  # type: ignore
+
+    with pytest.raises(Exception):  # Type error or value error
+        ch.find_path("A", None)  # type: ignore
+
+    # Test with empty strings
+    with pytest.raises(GraphOperationError):
+        ch.find_path("", "A")
+
+    with pytest.raises(GraphOperationError):
+        ch.find_path("A", "")
