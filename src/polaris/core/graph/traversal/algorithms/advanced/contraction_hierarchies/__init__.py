@@ -7,6 +7,7 @@ algorithm, including preprocessing and path finding functionality.
 
 from typing import List, Optional, Callable, TYPE_CHECKING
 
+from polaris.core.exceptions import GraphOperationError
 from polaris.core.graph.traversal.path_models import PathResult
 from polaris.core.graph.traversal.utils import WeightFunc
 from polaris.core.models import Edge
@@ -42,11 +43,13 @@ class ContractionHierarchies:
     def state(self) -> ContractionState:
         """Get current algorithm state."""
         if self._state is None:
-            raise RuntimeError("Graph not preprocessed")
+            raise GraphOperationError("Graph must be preprocessed before finding paths")
         return self._state
 
     def preprocess(self) -> None:
         """Preprocess graph to build contraction hierarchy."""
+        # Clear existing state when preprocessing
+        self.storage.clear()
         preprocessor = ContractionPreprocessor(self.graph, self.storage)
         self._state = preprocessor.preprocess()
 
@@ -76,7 +79,7 @@ class ContractionHierarchies:
             PathResult containing shortest path
 
         Raises:
-            GraphOperationError: If no path exists
+            GraphOperationError: If no path exists or graph not preprocessed
         """
         finder = ContractionPathFinder(self.graph, self.state, self.storage)
         return finder.find_path(
