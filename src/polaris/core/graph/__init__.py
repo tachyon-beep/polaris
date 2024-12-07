@@ -225,7 +225,7 @@ class Graph:
         max_depth: Optional[int] = None,
         path_type: PathType = PathType.SHORTEST,
         **kwargs: Any,
-    ) -> Union[PathResult, Iterator[PathResult]]:
+    ) -> PathResult | Iterator[PathResult]:
         """
         Find paths between nodes using the specified algorithm.
 

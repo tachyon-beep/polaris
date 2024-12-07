@@ -5,6 +5,8 @@ This module defines the core data structures used by the Contraction Hierarchies
 implementation, including shortcuts and algorithm state.
 """
 
+from collections import defaultdict
+
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, Optional, Set, Tuple
@@ -110,7 +112,7 @@ class ContractionState:
 
     node_level: Dict[str, int] = field(default_factory=dict)
     shortcuts: Dict[Tuple[str, str], Shortcut] = field(default_factory=dict)
-    contracted_neighbors: Dict[str, Set[str]] = field(default_factory=lambda: {})
+    contracted_neighbors: Dict[str, Set[str]] = field(default_factory=lambda: defaultdict(set))
 
     def add_shortcut(self, shortcut: Shortcut) -> None:
         """

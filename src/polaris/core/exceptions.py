@@ -39,8 +39,6 @@ class StorageError(Exception):
         * Storage quota exceeded
     """
 
-    pass
-
 
 class CacheError(Exception):
     """
@@ -57,8 +55,6 @@ class CacheError(Exception):
         * Thread synchronization issues
     """
 
-    pass
-
 
 class QueryError(Exception):
     """
@@ -72,8 +68,6 @@ class QueryError(Exception):
         * Malformed query syntax
         * Query timeout
     """
-
-    pass
 
 
 class GraphOperationError(Exception):
@@ -108,8 +102,6 @@ class EventError(Exception):
         * Event handler exceptions
     """
 
-    pass
-
 
 class ConfigurationError(Exception):
     """
@@ -124,8 +116,6 @@ class ConfigurationError(Exception):
         * Invalid configuration values
         * Configuration conflicts
     """
-
-    pass
 
 
 class AuthenticationError(Exception):
@@ -142,8 +132,6 @@ class AuthenticationError(Exception):
         * Authentication service failures
     """
 
-    pass
-
 
 class AuthorizationError(Exception):
     """
@@ -157,8 +145,6 @@ class AuthorizationError(Exception):
         * Role-based access control violations
         * Resource access restrictions
     """
-
-    pass
 
 
 class ResourceNotFoundError(Exception):
@@ -174,8 +160,6 @@ class ResourceNotFoundError(Exception):
         * Configuration not found
     """
 
-    pass
-
 
 class NodeNotFoundError(ResourceNotFoundError):
     """
@@ -189,8 +173,6 @@ class NodeNotFoundError(ResourceNotFoundError):
         * Node update for missing node
         * Node deletion for non-existent node
     """
-
-    pass
 
 
 class EdgeNotFoundError(ResourceNotFoundError):
@@ -206,8 +188,6 @@ class EdgeNotFoundError(ResourceNotFoundError):
         * Edge deletion for non-existent edge
     """
 
-    pass
-
 
 class DuplicateResourceError(Exception):
     """
@@ -221,8 +201,6 @@ class DuplicateResourceError(Exception):
         * Duplicate edge creation
         * Unique constraint violations
     """
-
-    pass
 
 
 class InvalidOperationError(Exception):
@@ -238,8 +216,6 @@ class InvalidOperationError(Exception):
         * Context-specific violations
     """
 
-    pass
-
 
 class RateLimitError(Exception):
     """
@@ -254,8 +230,6 @@ class RateLimitError(Exception):
         * Resource utilization thresholds
     """
 
-    pass
-
 
 class ServiceUnavailableError(Exception):
     """
@@ -269,5 +243,3 @@ class ServiceUnavailableError(Exception):
         * System maintenance
         * Resource exhaustion
     """
-
-    pass

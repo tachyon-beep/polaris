@@ -7,13 +7,11 @@ capabilities, specifically designed for the Contraction Hierarchies algorithm.
 
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Optional, Any, Dict, List, Set, TYPE_CHECKING
+from typing import Optional, Any, Dict, TYPE_CHECKING
 import threading
 import time
 import math
 import logging
-import weakref
-from contextlib import contextmanager
 
 if TYPE_CHECKING:
     from polaris.core.graph import Graph
@@ -25,13 +23,9 @@ logger.setLevel(logging.DEBUG)
 class CacheError(Exception):
     """Base exception for cache-related errors."""
 
-    pass
-
 
 class InvalidValueError(CacheError):
     """Exception raised when a value cannot be cached."""
-
-    pass
 
 
 @dataclass
@@ -63,16 +57,16 @@ class CacheEntry:
             len(value)  # This will raise if value doesn't support len()
 
             # Then validate we can convert it to a string
-            logger.debug(f"Validating value can be stringified")
+            logger.debug("Validating value can be stringified")
             value_str = str(value)
 
             # Finally get the encoded size
             size = len(value_str.encode())
-            logger.debug(f"Value size: {size} bytes")
+            logger.debug("Value size: %d bytes", size)
             return size
 
         except Exception as e:
-            logger.debug(f"Value validation failed: {e}")
+            logger.debug("Value validation failed: %s", e)
             raise InvalidValueError(f"Value must support len() and str(): {e}")
 
     def __post_init__(self):
@@ -80,7 +74,7 @@ class CacheEntry:
         if self.size_bytes == 0:
             logger.debug("CacheEntry post init - calculating size")
             self.size_bytes = self.validate_value(self.value)
-            logger.debug(f"Size calculated: {self.size_bytes}")
+            logger.debug("Size calculated: %d", self.size_bytes)
 
 
 class CacheStats:
@@ -103,7 +97,7 @@ class CacheStats:
         with self._lock:
             if stat in self._stats:
                 self._stats[stat] += amount
-                logger.debug(f"Incremented {stat} by {amount}, new value: {self._stats[stat]}")
+                logger.debug("Incremented %s by %d, new value: %d", stat, amount, self._stats[stat])
 
     def set(self, stat: str, value: Any) -> None:
         """Thread-safe set of a statistic."""
@@ -160,7 +154,7 @@ class DynamicLRUCache:
         self._running = True
 
         logger.debug(
-            f"Cache initialized with TTL={ttl_seconds}s, " f"cleanup_interval={cleanup_interval}s"
+            f"Cache initialized with TTL={ttl_seconds}s, cleanup_interval={cleanup_interval}s"
         )
 
         # Start monitoring thread
@@ -197,9 +191,9 @@ class DynamicLRUCache:
 
                 # Check TTL
                 age = time.time() - entry.timestamp
-                logger.debug(f"Entry age: {age}s, TTL: {self._ttl}s")
+                logger.debug("Entry age: %ss, TTL: %ss", age, self._ttl)
                 if age > self._ttl:
-                    logger.debug(f"Entry expired, age={age}s > ttl={self._ttl}s")
+                    logger.debug("Entry expired, age=%ss > ttl=%ss", age, self._ttl)
                     self._remove_entry(key)
                     self._stats.increment("misses")
                     return None
@@ -273,7 +267,7 @@ class DynamicLRUCache:
         entry = self._cache.pop(key)
         self._stats.increment("evictions")
         self._stats.increment("total_bytes", -entry.size_bytes)
-        logger.debug(f"Removed entry for {key!r}")
+        logger.debug("Removed entry for %r", key)
 
     def _remove_oldest(self) -> None:
         """Remove the oldest cache entry."""

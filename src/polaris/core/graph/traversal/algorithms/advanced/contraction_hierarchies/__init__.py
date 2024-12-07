@@ -35,23 +35,25 @@ class ContractionHierarchies:
         Args:
             graph: Graph to build hierarchy on
         """
-        self.graph = graph
-        self.storage = ContractionStorage()
-        self._state = None
+        self.graph: "Graph" = graph
+        self._state: Optional[ContractionState] = None  # Explicitly initialize as None
+        self.storage: ContractionStorage = ContractionStorage(self._state or ContractionState())
+        self.preprocessor: ContractionPreprocessor = ContractionPreprocessor(
+            self.graph, self.storage
+        )
 
     @property
     def state(self) -> ContractionState:
         """Get current algorithm state."""
         if self._state is None:
-            raise GraphOperationError("Graph must be preprocessed before finding paths")
+            raise GraphOperationError("Graph must be preprocessed before accessing state.")
         return self._state
 
     def preprocess(self) -> None:
         """Preprocess graph to build contraction hierarchy."""
         # Clear existing state when preprocessing
         self.storage.clear()
-        preprocessor = ContractionPreprocessor(self.graph, self.storage)
-        self._state = preprocessor.preprocess()
+        self._state = self.preprocessor.preprocess()  # Assign new state
 
     def find_path(
         self,

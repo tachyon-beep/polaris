@@ -5,16 +5,16 @@ This module provides helper functions for node importance calculation,
 shortcut necessity checking, and path validation.
 """
 
-from typing import Dict, List, Optional, Set, Tuple, TYPE_CHECKING, Callable, Any
+from typing import Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 import logging
 import statistics
 import threading
 import time
-from functools import lru_cache, wraps
 from hashlib import sha256
 from collections import defaultdict
-
-from polaris.core.graph.traversal.utils import WeightFunc, get_edge_weight
+import ast
+from heapq import heappop, heappush
+from polaris.core.graph.traversal.utils import WeightFunc
 from polaris.core.models import Edge
 from polaris.core.exceptions import GraphOperationError
 from .models import SHORTCUT_TYPE
@@ -135,48 +135,51 @@ def calculate_node_importance(
     Returns:
         Importance score (higher means more important)
     """
+
     start_time = time.time()
     try:
         with _graph_lock:
-            # Get original edges and neighbors
+            # Get neighbors
             neighbors = list(graph.get_neighbors(node))
-            original_edges = len(neighbors)
+            incoming = list(graph.get_neighbors(node, reverse=True))
+            original_edges = len(neighbors) + len(incoming)
 
-            # Calculate local clustering coefficient
+            # Calculate clustering
             if original_edges > 1:
                 possible_connections = original_edges * (original_edges - 1) / 2
-                actual_connections = 0
-                for i, n1 in enumerate(neighbors):
-                    for n2 in neighbors[i + 1 :]:
-                        if graph.has_edge(n1, n2) or graph.has_edge(n2, n1):
-                            actual_connections += 1
+                actual_connections = sum(
+                    1
+                    for n1 in neighbors
+                    for n2 in neighbors[neighbors.index(n1) + 1 :]
+                    if graph.has_edge(n1, n2) or graph.has_edge(n2, n1)
+                )
                 clustering = actual_connections / possible_connections
             else:
                 clustering = 0
 
-            # Get contracted neighbor count
             contracted_count = len(contracted_neighbors.get(node, set()))
-
-            # Get current level
             level = node_level.get(node, 0)
 
-            # Calculate importance based on multiple factors
+            # Modified importance calculation
             importance = (
-                5 * shortcut_count  # Weight the cost of adding shortcuts
-                + 2 * contracted_count  # Consider neighborhood complexity
-                + level  # Preserve hierarchy levels
-                + original_edges  # Base importance on connectivity
-                + 3 * clustering  # Consider local structure
+                3 * shortcut_count  # Reduced weight on shortcuts
+                + contracted_count  # Reduced weight on neighborhood
+                + level
+                + original_edges * 2  # Increased weight on edges
+                + clustering
+                - len(neighbors) * len(incoming)  # Penalize high path potential
             )
 
             logger.debug(
-                f"Node {node} importance calculation:\n"
-                f"  Shortcut count: {shortcut_count}\n"
-                f"  Contracted neighbors: {contracted_count}\n"
-                f"  Level: {level}\n"
-                f"  Original edges: {original_edges}\n"
-                f"  Clustering coefficient: {clustering:.3f}\n"
-                f"  Final importance: {importance}"
+                "Node %s importance: shortcuts=%d, contracted=%d, level=%d,"
+                "edges=%d, clustering=%.3f, importance=%f",
+                node,
+                shortcut_count,
+                contracted_count,
+                level,
+                original_edges,
+                clustering,
+                importance,
             )
 
             return importance
@@ -193,81 +196,54 @@ def _witness_search(
     via: str,
     shortcut_weight: float,
     graph: "Graph",
-) -> bool:
-    """
-    Implementation of witness path search.
+) -> Tuple[bool, List[str]]:
+    cache = get_cache_manager().get_cache("witness_search")
+    cache_key = f"{graph_hash}:{shortcut_weight}"
 
-    Args:
-        graph_hash: Hash of relevant graph state
-        source: Source node
-        target: Target node
-        via: Node being contracted
-        shortcut_weight: Weight of potential shortcut
-        graph: Graph instance
+    cached = cache.get(cache_key)
+    if cached:
+        try:
+            return ast.literal_eval(cached)
+        except (ValueError, SyntaxError):
+            pass
 
-    Returns:
-        True if shortcut is necessary, False if witness path exists
-    """
-    from heapq import heappop, heappush
+    distances = {source: 0.0}
+    pq = [(0.0, source)]
+    visited = set()
+    paths = {source: [source]}  # Track paths for each node
 
-    start_time = time.time()
-    try:
-        # Get cache instance
-        cache = get_cache_manager().get_cache("witness_search")
-        cache_key = f"{graph_hash}:{shortcut_weight}"
+    while pq:
+        dist, node = heappop(pq)
+        if node == target:
+            result = (dist > shortcut_weight + EPSILON, paths[node])
+            cache.set(cache_key, str(result), get_cache_size(graph))
+            return result
 
-        # Check cache first
-        cached_result = cache.get(cache_key)
-        if cached_result is not None:
-            return cached_result
+        if node in visited or node == via:
+            continue
 
-        # Initialize distances and priority queue
-        distances = {source: 0.0}
-        pq = [(0.0, source)]
-        visited = set()
+        visited.add(node)
 
-        while pq:
-            dist, node = heappop(pq)
-
-            if node == target:
-                # Found a witness path that's better than or equal to the shortcut
-                result = dist > shortcut_weight + EPSILON
-                cache.set(cache_key, result, get_cache_size(graph))
-                return result
-
-            if node in visited or node == via:  # Don't go through contracted node
+        for neighbor in sorted(graph.get_neighbors(node)):
+            if neighbor == via:
                 continue
 
-            visited.add(node)
+            edge = graph.get_edge(node, neighbor)
+            if not edge:
+                continue
 
-            # Sort neighbors for deterministic behavior
-            neighbors = sorted(graph.get_neighbors(node))
-            for neighbor in neighbors:
-                if neighbor == via:  # Don't go through contracted node
-                    continue
+            new_dist = dist + edge.metadata.weight
+            if new_dist > shortcut_weight + EPSILON:
+                continue
 
-                edge = graph.get_edge(node, neighbor)
-                if not edge:
-                    continue
+            if neighbor not in distances or new_dist < distances[neighbor]:
+                distances[neighbor] = new_dist
+                paths[neighbor] = paths[node] + [neighbor]
+                heappush(pq, (new_dist, neighbor))
 
-                edge_weight = edge.metadata.weight  # Use raw weight for caching
-                new_dist = dist + edge_weight
-
-                if new_dist > shortcut_weight + EPSILON:
-                    continue
-
-                if neighbor not in distances or new_dist < distances[neighbor]:
-                    distances[neighbor] = new_dist
-                    heappush(pq, (new_dist, neighbor))
-
-        # No witness path found within weight limit
-        result = True
-        cache.set(cache_key, result, get_cache_size(graph))
-        return result
-
-    finally:
-        duration = time.time() - start_time
-        _performance.record_metric("witness_search_time", duration)
+    result = (True, paths.get(target, []))
+    cache.set(cache_key, str(result), get_cache_size(graph))
+    return result
 
 
 def is_shortcut_necessary(
@@ -277,7 +253,7 @@ def is_shortcut_necessary(
     shortcut_weight: float,
     graph: "Graph",
     weight_func: Optional[WeightFunc] = None,
-) -> bool:
+) -> Tuple[bool, List[str]]:
     """
     Determine if shortcut is necessary using witness search.
     Uses custom caching to avoid redundant calculations.
@@ -309,14 +285,13 @@ def is_shortcut_necessary(
             cache = get_cache_manager().get_cache("witness_search")
             cache_stats = cache.get_stats()
             if cache_stats["hits"] % 1000 == 0:
-                logger.info(f"Witness search cache stats: {cache_stats}")
+                logger.info("Witness search cache stats: %s", cache_stats)
 
             return is_necessary
 
     except Exception as e:
-        logger.error(f"Error in shortcut necessity check: {str(e)}")
-        raise GraphOperationError(f"Failed to check shortcut necessity: {str(e)}")
-
+        logger.error("Error in shortcut necessity check: %s", e)
+        raise GraphOperationError(f"Failed to check shortcut necessity: {str(e)}") from e
     finally:
         duration = time.time() - start_time
         _performance.record_metric("shortcut_necessity_check_time", duration)
@@ -398,8 +373,10 @@ def validate_shortcuts(shortcuts: Dict[str, Edge], graph: "Graph") -> bool:
             for edge in shortcuts.values():
                 if edge.relation_type != SHORTCUT_TYPE:
                     logger.error(
-                        f"Invalid shortcut {edge.from_entity}->{edge.to_entity}: "
-                        f"wrong relation type {edge.relation_type}"
+                        "Invalid shortcut %s->%s: wrong relation type %s",
+                        edge.from_entity,
+                        edge.to_entity,
+                        edge.relation_type,
                     )
                     return False
 
@@ -410,8 +387,9 @@ def validate_shortcuts(shortcuts: Dict[str, Edge], graph: "Graph") -> bool:
                         via_node = edge.context.split()[-1]
                     except (AttributeError, IndexError):
                         logger.error(
-                            f"Invalid shortcut {edge.from_entity}->{edge.to_entity}: "
-                            f"missing or invalid via node"
+                            "Invalid shortcut %s->%s: missing or invalid via node",
+                            edge.from_entity,
+                            edge.to_entity,
                         )
                         return False
 
@@ -421,8 +399,10 @@ def validate_shortcuts(shortcuts: Dict[str, Edge], graph: "Graph") -> bool:
 
                 if not lower_edge or not upper_edge:
                     logger.error(
-                        f"Invalid shortcut {edge.from_entity}->{edge.to_entity}: "
-                        f"missing component edges via {via_node}"
+                        "Invalid shortcut %s->%s: missing component edges via %s",
+                        edge.from_entity,
+                        edge.to_entity,
+                        via_node,
                     )
                     return False
 
@@ -432,8 +412,11 @@ def validate_shortcuts(shortcuts: Dict[str, Edge], graph: "Graph") -> bool:
 
                 if abs(shortcut_weight - actual_weight) > EPSILON:
                     logger.error(
-                        f"Invalid shortcut {edge.from_entity}->{edge.to_entity}: "
-                        f"weight mismatch {shortcut_weight} != {actual_weight}"
+                        "Invalid shortcut %s->%s: weight mismatch %s != %s",
+                        edge.from_entity,
+                        edge.to_entity,
+                        shortcut_weight,
+                        actual_weight,
                     )
                     return False
 

@@ -5,6 +5,8 @@ This module handles memory management and data storage for the Contraction
 Hierarchies implementation, ensuring efficient use of memory resources.
 """
 
+import copy
+import statistics
 from typing import Dict, Optional, Set, Tuple
 import threading
 import time
@@ -13,6 +15,12 @@ from collections import defaultdict
 from polaris.core.exceptions import GraphOperationError
 from polaris.core.graph.traversal.utils import MemoryManager
 from .models import ContractionState, Shortcut
+
+import logging
+
+# Initialize logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 
 class ContractionStorage:
@@ -27,19 +35,33 @@ class ContractionStorage:
     - Performance monitoring
     """
 
-    def __init__(self, max_memory_mb: Optional[float] = None):
+    def __init__(self, state: ContractionState, max_memory_mb: Optional[float] = None):
         """
-        Initialize storage manager.
+        Initialize storage for Contraction Hierarchies.
 
         Args:
-            max_memory_mb: Optional memory limit in MB
+            state: ContractionState to manage
+            max_memory_mb: Optional memory limit for storage in MB
         """
+        if not (max_memory_mb is None or isinstance(max_memory_mb, float)):
+            raise ValueError("max_memory_mb must be a float or None.")
+        self._state = state
         self.memory_manager = MemoryManager(max_memory_mb)
-        self._state = ContractionState()
-        self._lock = threading.RLock()  # Reentrant lock for thread safety
+        self._lock = threading.RLock()
+
         self._performance_metrics = defaultdict(list)
         self._shortcut_index = {}  # Cache for shortcut lookups
         self._neighbor_index = defaultdict(set)  # Cache for contracted neighbor lookups
+
+    @property
+    def shortcuts(self) -> Dict[Tuple[str, str], Shortcut]:
+        """Get all stored shortcuts."""
+        return self._state.shortcuts
+
+    @shortcuts.setter
+    def shortcuts(self, value: Dict[Tuple[str, str], Shortcut]) -> None:
+        """Set shortcuts in the current state."""
+        self._state.shortcuts = value
 
     def _record_operation_time(self, operation: str, duration: float) -> None:
         """Record the duration of an operation."""
@@ -71,6 +93,7 @@ class ContractionStorage:
             Current ContractionState
         """
         with self._lock:
+            logger.debug("Returning current state: node_level=%s", self._state.node_level)
             return self._state
 
     def add_shortcut(self, shortcut: Shortcut) -> None:
@@ -132,7 +155,11 @@ class ContractionStorage:
         try:
             self.check_memory()
             with self._lock:
+                logger.debug("Before setting node level: %s", self._state.node_level)
                 self._state.set_node_level(node, level)
+                logger.debug(
+                    "After setting node level for %s to %d: %s", node, level, self._state.node_level
+                )
         except Exception as e:
             raise GraphOperationError(f"Failed to set node level: {str(e)}")
         finally:
@@ -157,7 +184,7 @@ class ContractionStorage:
 
     def get_contracted_neighbors(self, node: str) -> Set[str]:
         """
-        Get contracted neighbors of a node.
+        Get or initialize contracted neighbors for a node.
 
         Args:
             node: Node ID
@@ -168,11 +195,17 @@ class ContractionStorage:
         start_time = time.time()
         try:
             with self._lock:
-                # Try cache first
+                # Check the cache first
                 if node in self._neighbor_index:
                     return self._neighbor_index[node].copy()
-                # Fall back to state if not in cache
-                return self._state.get_contracted_neighbors(node)
+
+                # Fallback to state and ensure lazy initialization
+                contracted_neighbors = self._state.get_contracted_neighbors(node)
+                if node not in self._neighbor_index:
+                    self._neighbor_index[node] = contracted_neighbors
+
+                # Return a copy to avoid unintended mutations
+                return contracted_neighbors.copy()
         finally:
             self._record_operation_time("get_contracted_neighbors", time.time() - start_time)
 
@@ -195,7 +228,7 @@ class ContractionStorage:
         start_time = time.time()
         try:
             with self._lock:
-                self._state = ContractionState()
+                self._state = ContractionState()  # Ensure a new state instance
                 self._shortcut_index.clear()
                 self._neighbor_index.clear()
                 self._performance_metrics.clear()
@@ -209,7 +242,6 @@ class ContractionStorage:
         Returns:
             Dictionary mapping operation names to their statistics
         """
-        import statistics
 
         with self._lock:
             metrics = {}
