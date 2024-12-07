@@ -5,7 +5,7 @@ This module provides helper functions for node importance calculation,
 shortcut necessity checking, and path validation.
 """
 
-from typing import Dict, List, Optional, Set, Tuple, TYPE_CHECKING
+from typing import Dict, List, Optional, Set, Tuple
 import logging
 import statistics
 import threading
@@ -15,13 +15,12 @@ from collections import defaultdict
 import ast
 from heapq import heappop, heappush
 from polaris.core.graph.traversal.utils import WeightFunc
-from polaris.core.models import Edge
+from polaris.core.graph import Graph
+from polaris.core.models import Edge, EdgeMetadata
+from polaris.core.enums import RelationType
 from polaris.core.exceptions import GraphOperationError
 from .models import SHORTCUT_TYPE
 from .cache import get_cache_manager, get_cache_size
-
-if TYPE_CHECKING:
-    from polaris.core.graph import Graph
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)

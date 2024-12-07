@@ -5,19 +5,23 @@ This module handles the preprocessing phase of the Contraction Hierarchies algor
 including node ordering and shortcut creation.
 """
 
+import datetime
 import time
 import logging
 from heapq import heappop, heappush
-from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
-
-from polaris.core.models import Edge
-from polaris.core.exceptions import GraphOperationError
-from .models import ContractionState, Shortcut
+from typing import Dict, List, Optional, Tuple
 from .storage import ContractionStorage
-from .utils import calculate_node_importance, is_shortcut_necessary, EPSILON
+from .models import ContractionState, Shortcut, RelationType
+from .utils import (
+    calculate_node_importance,
+    is_shortcut_necessary,
+    EPSILON,
+    Graph,
+    Edge,
+    EdgeMetadata,
+    GraphOperationError,
+)
 
-if TYPE_CHECKING:
-    from polaris.core.graph import Graph
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -25,13 +29,13 @@ logger.setLevel(logging.DEBUG)
 
 class ContractionPreprocessor:
     """
-    Handles preprocessing for Contraction Hierarchies algorithm.
-
-    Features:
-    - Node importance calculation
-    - Contraction ordering
-    - Shortcut creation
-    - Progress tracking
+        Handles preprocessing for Contraction Hierarchies algorithm.
+    short
+        Features:
+        - Node importance calculation
+        - Contraction ordering
+        - Shortcut creation
+        - Progress tracking
     """
 
     def __init__(self, graph: "Graph", storage: ContractionStorage):
@@ -74,7 +78,7 @@ class ContractionPreprocessor:
                 self.storage.get_state().node_level,
                 self._count_shortcuts(node),
             )
-            logger.debug(f"Node {node} importance updated to {importance}")
+            logger.debug("Node %s importance updated to %s", node, importance)
             return importance
 
         if new_edge:
@@ -118,6 +122,51 @@ class ContractionPreprocessor:
 
         return state
 
+    def rebuild_parallel_edges_index(self) -> None:
+        """Rebuild the parallel edges index from the current graph."""
+        self._build_parallel_edges_index()
+        logger.debug("Rebuilt the parallel_edges index.")
+
+    def add_edge(self, from_node: str, to_node: str, weight: float) -> None:
+        """Add an edge to the graph and update the parallel edges index."""
+        new_edge = Edge(
+            from_entity=from_node,
+            to_entity=to_node,
+            relation_type=RelationType.CONNECTS_TO,  # Ensure this is a valid RelationType
+            metadata=EdgeMetadata(
+                created_at=datetime.datetime.now(),
+                last_modified=datetime.datetime.now(),
+                confidence=1.0,  # Assign appropriate confidence
+                source="preprocessor",  # Assign appropriate source
+                bidirectional=False,
+                temporal=False,
+                weight=weight,
+                custom_attributes={},
+            ),
+            impact_score=1.0,  # Assign a suitable impact score
+            attributes={},  # Initialize if necessary
+            context=None,
+            validation_status="unverified",
+            custom_metrics={},
+        )
+
+        self.graph.add_edge(new_edge)
+
+        key = (from_node, to_node)
+        if key not in self._parallel_edges:
+            self._parallel_edges[key] = []
+        self._parallel_edges[key].append(new_edge)
+        logger.debug("Added edge %s and updated parallel_edges index.", new_edge)
+
+    def remove_edge(self, from_node: str, to_node: str) -> None:
+        """Remove an edge from the graph and update the parallel edges index."""
+        self.graph.remove_edge(from_node, to_node)
+        key = (from_node, to_node)
+        if key in self._parallel_edges:
+            # Assuming removal of all parallel edges for simplicity
+            del self._parallel_edges[key]
+            logger.debug("Removed all edges for key %s from parallel_edges index.", key)
+
     def _get_best_edge(self, from_node: str, to_node: str) -> Optional["Edge"]:
         """
         Get the edge with minimum weight between two nodes.
@@ -129,20 +178,34 @@ class ContractionPreprocessor:
         Returns:
             Edge with minimum weight, or None if no edge exists
         """
+        logger.debug("Fetching best edge from %s to %s", from_node, to_node)
         best_edge = None
         key = (from_node, to_node)
+
         if key in self._parallel_edges:
+            logger.debug("Edges found for %s: %s", key, self._parallel_edges[key])
             for edge in self._parallel_edges[key]:
                 if not best_edge or edge.metadata.weight < best_edge.metadata.weight:
                     best_edge = edge
+            logger.debug("Selected best edge: %s", best_edge)
+        else:
+            logger.debug("No edges found in parallel_edges for %s", key)
 
+        # Check if a shortcut exists between the nodes
         shortcut = self.storage.get_shortcut(from_node, to_node)
         if shortcut and (
             not best_edge or shortcut.edge.metadata.weight < best_edge.metadata.weight
         ):
+            logger.debug("Using shortcut instead of direct edge: %s", shortcut.edge)
             best_edge = shortcut.edge
 
+        if not best_edge:
+            logger.debug("No edge or shortcut found from %s to %s", from_node, to_node)
         return best_edge
+
+    def contract_node(self, node: str) -> List[Tuple[str, str]]:
+        """Public wrapper for contracting a single node."""
+        return self._contract_node(node)
 
     def _contract_node(self, node: str) -> List[Tuple[str, str]]:
         """Contract node and create necessary shortcuts."""
@@ -219,7 +282,8 @@ class ContractionPreprocessor:
                         shortcut = self._create_validated_shortcut(
                             u, v, node, lower_edge, upper_edge
                         )
-                        self.storage.add_shortcut(shortcut)
+                        # Use add_edge to ensure the parallel_edges index is updated
+                        self.add_edge(u, v, shortcut.edge.metadata.weight)
                         shortcuts.append((u, v))
                     except GraphOperationError as e:
                         logger.error(
@@ -236,34 +300,66 @@ class ContractionPreprocessor:
 
     def _validate_shortcut(self, shortcut: Shortcut) -> bool:
         """
-        Validate shortcut consistency and correctness.
+        Validate the consistency and correctness of a given shortcut.
+
+        A shortcut is valid if:
+        1. It connects the correct nodes.
+        2. Its intermediate connections (via node) are accurate.
+        3. Its weight matches the sum of its lower and upper edge weights
+           within an acceptable tolerance.
 
         Args:
-            shortcut: Shortcut to validate
+            shortcut (Shortcut): The shortcut to validate.
 
         Returns:
-            True if valid, False otherwise
+            bool: True if the shortcut is valid, False otherwise.
         """
-        # Verify edge connectivity
+        logger.debug("Validating shortcut: %s", shortcut)
+
+        # Verify edge connectivity: the shortcut's endpoints must match its component edges
         if (
             shortcut.edge.from_entity != shortcut.lower_edge.from_entity
             or shortcut.edge.to_entity != shortcut.upper_edge.to_entity
         ):
+            logger.debug(
+                "Shortcut validation failed: edge connectivity mismatch. "
+                "Expected from %s to %s, but got %s to %s.",
+                shortcut.lower_edge.from_entity,
+                shortcut.upper_edge.to_entity,
+                shortcut.edge.from_entity,
+                shortcut.edge.to_entity,
+            )
             return False
 
-        # Verify via node
+        # Verify via node: the lower edge must end at the via node,
+        # and the upper edge must start from it
         if (
             shortcut.lower_edge.to_entity != shortcut.via_node
             or shortcut.upper_edge.from_entity != shortcut.via_node
         ):
+            logger.debug(
+                "Shortcut validation failed: via node mismatch. "
+                f"Lower edge ends at {shortcut.lower_edge.to_entity}, "
+                f"upper edge starts at {shortcut.upper_edge.from_entity}, "
+                f"but via node is {shortcut.via_node}."
+            )
             return False
 
-        # Check weight consistency
+        # Check weight consistency: the shortcut weight must match
+        # the combined weights of its components
         shortcut_weight = shortcut.edge.metadata.weight
         path_weight = shortcut.lower_edge.metadata.weight + shortcut.upper_edge.metadata.weight
+
         if abs(shortcut_weight - path_weight) > EPSILON:
+            logger.debug(
+                "Shortcut validation failed: weight mismatch. "
+                f"Shortcut weight is {shortcut_weight}, "
+                f"path weight is {path_weight}, "
+                f"tolerance is {EPSILON}."
+            )
             return False
 
+        logger.debug("Shortcut validated successfully: %s", shortcut)
         return True
 
     def _create_validated_shortcut(
@@ -275,6 +371,9 @@ class ContractionPreprocessor:
         # Validate shortcut consistency
         if not self._validate_shortcut(shortcut):
             raise GraphOperationError(f"Invalid shortcut {u}->{v}")
+
+        # Add the shortcut using the preprocessor's add_edge method
+        self.add_edge(u, v, shortcut.edge.metadata.weight)
 
         return shortcut
 

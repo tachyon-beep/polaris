@@ -5,7 +5,6 @@ This module handles memory management and data storage for the Contraction
 Hierarchies implementation, ensuring efficient use of memory resources.
 """
 
-import copy
 import statistics
 from typing import Dict, Optional, Set, Tuple
 import threading
