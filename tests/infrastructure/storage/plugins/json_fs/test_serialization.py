@@ -5,9 +5,9 @@ from datetime import datetime
 
 import pytest
 
-from src.core.enums import EntityType, RelationType
-from src.core.models import Edge, EdgeMetadata, Node, NodeMetadata
-from src.infrastructure.storage.plugins.json_fs.utils.serialization import (
+from polaris.core.enums import EntityType, RelationType
+from polaris.core.models import Edge, EdgeMetadata, Node, NodeMetadata
+from polaris.infrastructure.storage.plugins.json_fs.utils.serialization import (
     PolarisJSONEncoder,
     deserialize_datetime,
     deserialize_edge,

@@ -7,10 +7,10 @@ from typing import cast
 
 import pytest
 
-from src.core.enums import EntityType, RelationType
-from src.core.exceptions import GraphOperationError, ValidationError
-from src.core.graph import Graph
-from src.core.models import Edge, EdgeMetadata, Node, NodeMetadata, NodeMetrics
+from polaris.core.enums import EntityType, RelationType
+from polaris.core.exceptions import GraphOperationError, ValidationError
+from polaris.core.graph import Graph
+from polaris.core.models import Edge, EdgeMetadata, Node, NodeMetadata, NodeMetrics
 
 
 @pytest.fixture
@@ -115,7 +115,7 @@ def test_edge_validation_invalid_type(valid_edge_metadata):
 
 def test_edge_validation_invalid_impact(valid_edge_metadata):
     """Test edge validation with invalid impact score."""
-    with pytest.raises(ValueError, match="impact_score must be between 0 and 1"):
+    with pytest.raises(ValueError, match="impact_score must be between 0.0 and 1.0"):
         Edge(
             from_entity="node1",
             to_entity="node2",

@@ -1,23 +1,32 @@
 """
-Tests for graph path finding algorithms.
+Tests for graph traversal algorithms.
 """
 
 from datetime import datetime
+from time import sleep
 from typing import Iterator, List, Set, Tuple, Union, cast
 
 import pytest
 
-from src.core.enums import RelationType
-from src.core.exceptions import GraphOperationError, NodeNotFoundError
-from src.core.graph import Graph
-from src.core.graph_paths import (
+from polaris.core.enums import RelationType
+from polaris.core.exceptions import GraphOperationError, NodeNotFoundError
+from polaris.core.graph import Graph
+from polaris.core.graph.traversal import (
     DEFAULT_MAX_PATH_LENGTH,
     PathFinding,
     PathResult,
     PathType,
     PathValidationError,
 )
-from src.core.models import Edge, EdgeMetadata
+from polaris.core.graph.traversal.cache import PathCache
+from polaris.core.graph.traversal.utils import allow_negative_weights
+from polaris.core.models import Edge, EdgeMetadata
+
+
+@pytest.fixture
+def path_finding() -> PathFinding:
+    """Fixture providing PathFinding instance."""
+    return PathFinding()
 
 
 @pytest.fixture
@@ -39,6 +48,14 @@ def cyclic_graph(sample_edge_metadata) -> Graph:
     |         |
     v         v
     D ------> E
+
+    Edge impact scores:
+    A->B: 0.8
+    B->C: 0.7
+    C->A: 0.6
+    A->D: 0.5
+    C->E: 0.4
+    D->E: 0.3
     """
     edges = [
         Edge(
@@ -87,27 +104,129 @@ def cyclic_graph(sample_edge_metadata) -> Graph:
     return Graph(edges=edges)
 
 
-def test_shortest_path_basic(cyclic_graph):
+def test_shortest_path_basic(path_finding, cyclic_graph):
     """Test basic shortest path finding."""
-    path = PathFinding.shortest_path(cyclic_graph, "A", "E")
-    assert path.length == 2  # A -> D -> E is shortest
+    path = path_finding.shortest_path(cyclic_graph, "A", "E")
+    assert len(path) == 2  # A -> D -> E is shortest
     assert path[0].from_entity == "A" and path[0].to_entity == "D"
     assert path[1].from_entity == "D" and path[1].to_entity == "E"
 
 
-def test_shortest_path_with_weights(cyclic_graph):
-    """Test shortest path with custom weight function."""
+def test_shortest_path_with_inverse_weights(path_finding, cyclic_graph):
+    """Test shortest path with inverse impact score weights.
 
+    This test verifies that the shortest path algorithm finds the path with lowest
+    total inverse weight. For our example graph:
+
+    Path A->B->C->E:
+    - A->B: impact 0.8  -> weight 1/0.8 = 1.25
+    - B->C: impact 0.7  -> weight 1/0.7 = 1.43
+    - C->E: impact 0.4  -> weight 1/0.4 = 2.50
+    Total weight = 5.18
+
+    Path A->D->E:
+    - A->D: impact 0.5  -> weight 1/0.5 = 2.00
+    - D->E: impact 0.3  -> weight 1/0.3 = 3.33
+    Total weight = 5.33
+
+    The algorithm should choose A->B->C->E since 5.18 < 5.33.
+    Note that the path with lowest total inverse weight
+    corresponds to the path with highest total impact score.
+    """
+
+    @allow_negative_weights
     def weight_func(edge: Edge) -> float:
-        return 1.0 / edge.impact_score  # Higher impact means lower weight
+        return 1.0 / edge.impact_score
 
-    path = PathFinding.shortest_path(cyclic_graph, "A", "E", weight_func=weight_func)
-    # Should prefer path with higher impact scores
-    assert path.length == 3  # A -> B -> C -> E
+    print("\nTesting shortest path with inverse weights:")
+
+    # Calculate and print weights for all possible paths
+    path1_weights = [(1.0 / 0.5, "A->D"), (1.0 / 0.3, "D->E")]
+    path2_weights = [(1.0 / 0.8, "A->B"), (1.0 / 0.7, "B->C"), (1.0 / 0.4, "C->E")]
+
+    print("Path A->D->E:")
+    print("  " + " + ".join(f"{w:.2f} ({e})" for w, e in path1_weights))
+    print(f"  = {sum(w for w, _ in path1_weights):.2f}")
+
+    print("\nPath A->B->C->E:")
+    print("  " + " + ".join(f"{w:.2f} ({e})" for w, e in path2_weights))
+    print(f"  = {sum(w for w, _ in path2_weights):.2f}")
+
+    # Find shortest path
+    path = path_finding.shortest_path(cyclic_graph, "A", "E", weight_func=weight_func)
+
+    print("\nChosen path:")
+    path_edges = []
+    for edge in path:
+        weight = 1.0 / edge.impact_score
+        print(
+            f"  {edge.from_entity}->{edge.to_entity} "
+            f"(impact={edge.impact_score:.1f}, weight={weight:.2f})"
+        )
+        path_edges.append((weight, f"{edge.from_entity}->{edge.to_entity}"))
+
+    print("\nTotal path weight:")
+    print("  " + " + ".join(f"{w:.2f} ({e})" for w, e in path_edges))
+    print(f"  = {path.total_weight:.2f}")
+
+    # Verify correct path was chosen
     assert [edge.to_entity for edge in path] == ["B", "C", "E"]
+    assert path.total_weight == pytest.approx(5.18, rel=1e-2)
 
 
-def test_shortest_path_no_path(cyclic_graph, sample_edge_metadata):
+def test_shortest_path_with_impact_weights(path_finding, cyclic_graph):
+    """Test shortest path using impact scores as weights.
+
+    This test verifies that we can find the path with highest total impact
+    by using inverse impact scores as weights. This works because:
+    1. The Bellman-Ford algorithm finds path with minimum total weight
+    2. Using inverse of impact scores, minimum total weight corresponds to maximum total impact
+
+    For example, consider two paths:
+    A->B->C->E: impact scores 0.8, 0.7, 0.4
+        - Total impact = 1.9
+        - Inverse weights = 1/0.8 + 1/0.7 + 1/0.4 ≈ 5.18
+
+    A->D->E: impact scores 0.5, 0.3
+        - Total impact = 0.8
+        - Inverse weights = 1/0.5 + 1/0.3 ≈ 5.33
+
+    The path A->B->C->E has higher total impact (1.9 > 0.8)
+    and lower total inverse weight (5.18 < 5.33), so minimizing
+    inverse weights finds the maximum impact path.
+    """
+
+    @allow_negative_weights
+    def weight_func(edge: Edge) -> float:
+        return (
+            1.0 / edge.impact_score
+        )  # Use inverse weights to make minimization equivalent to maximization
+
+    print("\nTesting shortest path with impact weights:")
+    print("A->D->E total impact:", 0.5 + 0.3)
+    print("A->B->C->E total impact:", 0.8 + 0.7 + 0.4)
+
+    path = path_finding.shortest_path(cyclic_graph, "A", "E", weight_func=weight_func)
+    print("\nChosen path:")
+    total_impact = 0.0
+    total_weight = 0.0
+    for edge in path:
+        print(
+            f"  {edge.from_entity}->{edge.to_entity} "
+            f"(impact={edge.impact_score:.1f}, weight={1.0/edge.impact_score:.2f})"
+        )
+        total_impact += edge.impact_score
+        total_weight += 1.0 / edge.impact_score
+    print(f"Total impact: {total_impact:.1f}")
+    print(f"Total inverse weight: {total_weight:.2f}")
+
+    # Should choose path with highest impact scores / lowest inverse weights
+    assert [edge.to_entity for edge in path] == ["B", "C", "E"]
+    assert total_impact == pytest.approx(1.9, rel=1e-2)  # Sum of actual impact scores
+    assert total_weight == pytest.approx(5.18, rel=1e-2)  # Sum of inverse weights
+
+
+def test_shortest_path_no_path(path_finding, cyclic_graph, sample_edge_metadata):
     """Test shortest path when no path exists."""
     # Add an isolated node F
     edge = Edge(
@@ -120,39 +239,39 @@ def test_shortest_path_no_path(cyclic_graph, sample_edge_metadata):
     cyclic_graph.add_edge(edge)
 
     with pytest.raises(GraphOperationError, match="No path exists between A and F"):
-        PathFinding.shortest_path(cyclic_graph, "A", "F")
+        path_finding.shortest_path(cyclic_graph, "A", "F")
 
 
-def test_edge_weight_validation(cyclic_graph):
+def test_edge_weight_validation(path_finding, cyclic_graph):
     """Test edge weight validation."""
 
     def invalid_weight_func(edge: Edge) -> float:
         return 0.0  # Invalid weight
 
-    with pytest.raises(ValueError, match="Edge weight must be positive"):
-        PathFinding._get_edge_weight(cyclic_graph.get_edge("A", "B"), invalid_weight_func)
+    with pytest.raises(ValueError, match="Edge weight must be non-zero"):
+        path_finding._get_edge_weight(cyclic_graph.get_edge("A", "B"), invalid_weight_func)
 
     def negative_weight_func(edge: Edge) -> float:
         return -1.0  # Invalid weight
 
     with pytest.raises(ValueError, match="Edge weight must be positive"):
-        PathFinding._get_edge_weight(cyclic_graph.get_edge("A", "B"), negative_weight_func)
+        path_finding._get_edge_weight(cyclic_graph.get_edge("A", "B"), negative_weight_func)
 
 
-def test_path_result_methods(cyclic_graph):
+def test_path_result_methods(path_finding, cyclic_graph):
     """Test PathResult methods and properties."""
     # Get a simple path
     edges = [cyclic_graph.get_edge("A", "D"), cyclic_graph.get_edge("D", "E")]
 
-    # Test _calculate_path_weight
-    total_weight = PathFinding._calculate_path_weight(edges, None)
+    # Test calculate_path_weight
+    total_weight = path_finding._calculate_path_weight(edges, None)
     # Use pytest.approx for floating point comparison
     assert total_weight == pytest.approx(2.0, rel=1e-9)  # Default weight of 1.0 per edge
 
-    # Test _create_path_result
-    result = PathFinding._create_path_result(edges, None)
+    # Test create_path_result
+    result = path_finding._create_path_result(edges, None, cyclic_graph)
     assert result.total_weight == pytest.approx(2.0, rel=1e-9)
-    assert result.length == 2
+    assert len(result) == 2
     assert result.nodes == ["A", "D", "E"]
 
     # Test iteration
@@ -166,46 +285,41 @@ def test_path_result_methods(cyclic_graph):
     assert result[1].to_entity == "E"
 
 
-def test_path_validation(cyclic_graph):
+def test_path_validation(path_finding, cyclic_graph):
     """Test path validation."""
     # Create a valid path
     valid_path = [cyclic_graph.get_edge("A", "D"), cyclic_graph.get_edge("D", "E")]
-    result = PathFinding._create_path_result(valid_path, None)
-    result.validate()  # Should not raise
+    result = path_finding._create_path_result(valid_path, None, cyclic_graph)
+    result.validate(cyclic_graph)  # Should not raise
 
     # Create a disconnected path
     disconnected_path = [
         cyclic_graph.get_edge("A", "D"),
         cyclic_graph.get_edge("B", "C"),
     ]
-    result = PathFinding._create_path_result(disconnected_path, None)
+    result = path_finding._create_path_result(disconnected_path, None, cyclic_graph)
     with pytest.raises(PathValidationError, match="Path discontinuity"):
-        result.validate()
+        result.validate(cyclic_graph)
 
     # Test empty path validation
-    empty_result = PathResult(path=[], total_weight=0.0, length=0)
-    empty_result.validate()  # Should not raise
-
-    # Test length mismatch
-    invalid_result = PathResult(path=valid_path, total_weight=2.0, length=3)
-    with pytest.raises(PathValidationError, match="Path length mismatch"):
-        invalid_result.validate()
+    empty_result = PathResult(path=[], total_weight=0.0)
+    empty_result.validate(cyclic_graph)  # Should not raise
 
 
-def test_all_paths_max_paths_limit(cyclic_graph):
+def test_all_paths_max_paths_limit(path_finding, cyclic_graph):
     """Test max_paths limit in all_paths."""
     # Set max_paths to 1 to get only the first path
-    paths: List[PathResult] = list(PathFinding.all_paths(cyclic_graph, "A", "E", max_paths=1))
+    paths: List[PathResult] = list(path_finding.all_paths(cyclic_graph, "A", "E", max_paths=1))
     assert len(paths) == 1
 
     # Invalid max_paths
     with pytest.raises(ValueError, match="max_paths must be positive"):
-        next(PathFinding.all_paths(cyclic_graph, "A", "E", max_paths=0))
+        next(path_finding.all_paths(cyclic_graph, "A", "E", max_paths=0))
 
 
-def test_all_paths_basic(cyclic_graph):
+def test_all_paths_basic(path_finding, cyclic_graph):
     """Test basic path finding without cycles."""
-    paths: List[PathResult] = list(PathFinding.all_paths(cyclic_graph, "A", "E", max_length=3))
+    paths: List[PathResult] = list(path_finding.all_paths(cyclic_graph, "A", "E", max_length=3))
     assert len(paths) == 2  # Two possible paths: A->D->E and A->B->C->E
 
     # Verify both paths are present using PathResult's iteration
@@ -215,9 +329,9 @@ def test_all_paths_basic(cyclic_graph):
     assert path_ends == {("D", "E"), ("B", "C", "E")}
 
 
-def test_all_paths_with_cycle_detection(cyclic_graph):
+def test_all_paths_with_cycle_detection(path_finding, cyclic_graph):
     """Test that cycles are properly detected and handled."""
-    paths: List[PathResult] = list(PathFinding.all_paths(cyclic_graph, "A", "E"))
+    paths: List[PathResult] = list(path_finding.all_paths(cyclic_graph, "A", "E"))
 
     # Verify no paths contain cycles
     for path_result in paths:
@@ -228,21 +342,21 @@ def test_all_paths_with_cycle_detection(cyclic_graph):
             assert len(visited) == len(set(visited))
 
 
-def test_all_paths_max_length(cyclic_graph):
+def test_all_paths_max_length(path_finding, cyclic_graph):
     """Test max_length constraint in path finding."""
     # Only paths of length 2 or less
     short_paths: List[PathResult] = list(
-        PathFinding.all_paths(cyclic_graph, "A", "E", max_length=2)
+        path_finding.all_paths(cyclic_graph, "A", "E", max_length=2)
     )
     assert len(short_paths) == 1  # Only A->D->E
-    assert short_paths[0].length == 2
+    assert len(short_paths[0]) == 2
 
     # Allow longer paths
-    all_paths: List[PathResult] = list(PathFinding.all_paths(cyclic_graph, "A", "E", max_length=3))
+    all_paths: List[PathResult] = list(path_finding.all_paths(cyclic_graph, "A", "E", max_length=3))
     assert len(all_paths) == 2  # Both A->D->E and A->B->C->E
 
 
-def test_all_paths_with_filter(cyclic_graph):
+def test_all_paths_with_filter(path_finding, cyclic_graph):
     """Test path filtering functionality."""
 
     def filter_func(edges: List[Edge]) -> bool:
@@ -250,7 +364,7 @@ def test_all_paths_with_filter(cyclic_graph):
         return sum(edge.impact_score for edge in edges) > 1.0
 
     paths: List[PathResult] = list(
-        PathFinding.all_paths(cyclic_graph, "A", "E", filter_func=filter_func)
+        path_finding.all_paths(cyclic_graph, "A", "E", filter_func=filter_func)
     )
 
     # Verify all returned paths satisfy the filter
@@ -258,53 +372,54 @@ def test_all_paths_with_filter(cyclic_graph):
         assert sum(edge.impact_score for edge in path_result) > 1.0
 
 
-def test_all_paths_invalid_max_length(cyclic_graph):
+def test_all_paths_invalid_max_length(path_finding, cyclic_graph):
     """Test handling of invalid max_length values."""
-    with pytest.raises(ValueError, match="max_length must be positive"):
-        next(PathFinding.all_paths(cyclic_graph, "A", "E", max_length=0))
+    with pytest.raises(ValueError, match="max_length must be non-negative"):
+        next(path_finding.all_paths(cyclic_graph, "A", "E", max_length=-1))
 
-    with pytest.raises(ValueError, match="max_length must be positive"):
-        next(PathFinding.all_paths(cyclic_graph, "A", "E", max_length=-1))
+    # max_length=0 should return empty iterator
+    paths = list(path_finding.all_paths(cyclic_graph, "A", "E", max_length=0))
+    assert len(paths) == 0
 
 
-def test_all_paths_default_max_length(cyclic_graph):
+def test_all_paths_default_max_length(path_finding, cyclic_graph):
     """Test default max_length behavior."""
     # Should use DEFAULT_MAX_PATH_LENGTH when max_length is None
-    paths: List[PathResult] = list(PathFinding.all_paths(cyclic_graph, "A", "E"))
+    paths: List[PathResult] = list(path_finding.all_paths(cyclic_graph, "A", "E"))
     assert len(paths) == 2  # Should find all valid paths
     # Verify no path exceeds default length
-    assert all(path_result.length <= DEFAULT_MAX_PATH_LENGTH for path_result in paths)
+    assert all(len(path_result) <= DEFAULT_MAX_PATH_LENGTH for path_result in paths)
 
 
-def test_all_paths_nonexistent_nodes(cyclic_graph):
+def test_all_paths_nonexistent_nodes(path_finding, cyclic_graph):
     """Test handling of nonexistent nodes."""
     with pytest.raises(NodeNotFoundError, match="Start node 'X' not found"):
-        next(PathFinding.all_paths(cyclic_graph, "X", "E"))
+        next(path_finding.all_paths(cyclic_graph, "X", "E"))
 
     with pytest.raises(NodeNotFoundError, match="End node 'Y' not found"):
-        next(PathFinding.all_paths(cyclic_graph, "A", "Y"))
+        next(path_finding.all_paths(cyclic_graph, "A", "Y"))
 
 
-def test_all_paths_deep_recursion(cyclic_graph):
+def test_all_paths_deep_recursion(path_finding, cyclic_graph):
     """Test handling of potentially deep recursion scenarios."""
     # Set a very small max_length to verify deep recursion is prevented
-    paths: List[PathResult] = list(PathFinding.all_paths(cyclic_graph, "A", "E", max_length=2))
+    paths: List[PathResult] = list(path_finding.all_paths(cyclic_graph, "A", "E", max_length=2))
 
     # Should only find the direct path
     assert len(paths) == 1
-    assert paths[0].length == 2  # A->D->E
+    assert len(paths[0]) == 2  # A->D->E
 
     # Verify the path found is the shortest one
     assert paths[0][0].from_entity == "A" and paths[0][0].to_entity == "D"
     assert paths[0][1].from_entity == "D" and paths[0][1].to_entity == "E"
 
 
-def test_all_paths_cycle_with_different_lengths(cyclic_graph):
+def test_all_paths_cycle_with_different_lengths(path_finding, cyclic_graph):
     """Test paths in presence of cycles with different length constraints."""
     # Test with increasing max_length values
-    paths_2: List[PathResult] = list(PathFinding.all_paths(cyclic_graph, "A", "E", max_length=2))
-    paths_3: List[PathResult] = list(PathFinding.all_paths(cyclic_graph, "A", "E", max_length=3))
-    paths_4: List[PathResult] = list(PathFinding.all_paths(cyclic_graph, "A", "E", max_length=4))
+    paths_2: List[PathResult] = list(path_finding.all_paths(cyclic_graph, "A", "E", max_length=2))
+    paths_3: List[PathResult] = list(path_finding.all_paths(cyclic_graph, "A", "E", max_length=3))
+    paths_4: List[PathResult] = list(path_finding.all_paths(cyclic_graph, "A", "E", max_length=4))
 
     # Verify number of paths found increases with max_length
     assert len(paths_2) <= len(paths_3)
@@ -322,27 +437,27 @@ def test_all_paths_cycle_with_different_lengths(cyclic_graph):
     assert path_ends_2.issubset(path_ends_3)
 
 
-def test_path_finding_empty_graph():
+def test_path_finding_empty_graph(path_finding):
     """Test path finding on an empty graph."""
     empty_graph = Graph(edges=[])
 
     with pytest.raises(NodeNotFoundError):
-        next(PathFinding.all_paths(empty_graph, "A", "B"))
+        next(path_finding.all_paths(empty_graph, "A", "B"))
 
     with pytest.raises(NodeNotFoundError):
-        PathFinding.shortest_path(empty_graph, "A", "B")
+        path_finding.shortest_path(empty_graph, "A", "B")
 
 
-def test_find_paths_different_types(cyclic_graph):
+def test_find_paths_different_types(path_finding, cyclic_graph):
     """Test find_paths with different path types."""
     # Test shortest path type
-    result = PathFinding.find_paths(cyclic_graph, "A", "E", path_type=PathType.SHORTEST)
+    result = path_finding.find_paths(cyclic_graph, "A", "E", path_type=PathType.SHORTEST)
     assert isinstance(result, PathResult)
     shortest_path = cast(PathResult, result)
-    assert shortest_path.length == 2  # A->D->E is shortest
+    assert len(shortest_path) == 2  # A->D->E is shortest
 
     # Test all paths type
-    result = PathFinding.find_paths(cyclic_graph, "A", "E", path_type=PathType.ALL)
+    result = path_finding.find_paths(cyclic_graph, "A", "E", path_type=PathType.ALL)
     assert not isinstance(result, PathResult)  # Should be an iterator
     paths: List[PathResult] = list(cast(Iterator[PathResult], result))
     assert len(paths) == 2  # Two possible paths
@@ -352,11 +467,142 @@ def test_find_paths_different_types(cyclic_graph):
         # Filter function operates on List[Edge]
         return len(edges) == 2  # Only accept paths of length 2
 
-    result = PathFinding.find_paths(
+    result = path_finding.find_paths(
         cyclic_graph, "A", "E", path_type=PathType.FILTERED, filter_func=filter_func
     )
     assert not isinstance(result, PathResult)  # Should be an iterator
     paths = list(cast(Iterator[PathResult], result))
     assert len(paths) == 1  # Only A->D->E matches filter
     # Check length property on PathResult objects
-    assert all(path_result.length == 2 for path_result in paths)
+    assert all(len(path_result) == 2 for path_result in paths)
+
+
+def test_bidirectional_search_basic(path_finding, cyclic_graph):
+    """Test basic bidirectional search functionality."""
+    print("\nTesting bidirectional search from A to E")
+    result = path_finding.bidirectional_search(cyclic_graph, "A", "E")
+    print(f"\nResult path: {[f'{e.from_entity}->{e.to_entity}' for e in result]}")
+    assert isinstance(result, PathResult)
+    assert result.nodes[0] == "A"
+    assert result.nodes[-1] == "E"
+    assert len(result) == 2  # A->D->E is shortest
+
+
+def test_bidirectional_search_with_depth_limit(path_finding, cyclic_graph):
+    """Test bidirectional search respects depth limit."""
+    # Test with depth limit that should allow finding path
+    print("\nTesting bidirectional search with max_depth=2")
+    result = path_finding.bidirectional_search(cyclic_graph, "A", "E", max_depth=2)
+    print(f"\nResult path: {[f'{e.from_entity}->{e.to_entity}' for e in result]}")
+    assert isinstance(result, PathResult)
+    assert len(result) <= 2
+
+    # Test with depth limit that should prevent finding path
+    print("\nTesting bidirectional search with max_depth=1")
+    with pytest.raises(GraphOperationError):
+        path_finding.bidirectional_search(cyclic_graph, "A", "E", max_depth=1)
+
+
+def test_bidirectional_search_with_weights(path_finding, cyclic_graph):
+    """Test bidirectional search with impact score weights.
+
+    This test verifies that bidirectional search finds the path with highest
+    total impact score by using negated scores as weights.
+
+    Expected path: A->B->C->E because:
+    - A->B impact = 0.8
+    - B->C impact = 0.7
+    - C->E impact = 0.4
+    Total = 1.9
+
+    Compared to A->D->E:
+    - A->D impact = 0.5
+    - D->E impact = 0.3
+    Total = 0.8
+    """
+
+    @allow_negative_weights
+    def weight_func(edge: Edge) -> float:
+        return -edge.impact_score  # Negate so minimum path = maximum impact
+
+    print("\nTesting bidirectional search with impact weights:")
+    print("A->D->E total impact:", 0.5 + 0.3)
+    print("A->B->C->E total impact:", 0.8 + 0.7 + 0.4)
+
+    result = path_finding.bidirectional_search(cyclic_graph, "A", "E", weight_func=weight_func)
+    print("\nResult path:")
+    total_impact = 0.0
+    for edge in result:
+        print(f"  {edge.from_entity}->{edge.to_entity} (impact={edge.impact_score})")
+        total_impact += edge.impact_score
+    print(f"Total impact: {total_impact}")
+
+    # Should choose path with highest impact scores
+    assert result.nodes == ["A", "B", "C", "E"]
+    assert total_impact == pytest.approx(1.9, rel=1e-2)
+
+
+def test_caching_behavior(path_finding, cyclic_graph):
+    """Test that path finding results are properly cached."""
+    # Clear cache before testing
+    PathCache.clear()
+
+    # First search should miss cache
+    result1 = path_finding.bidirectional_search(cyclic_graph, "A", "E")
+    metrics1 = PathFinding.get_cache_metrics()
+    assert metrics1["hits"] == 0
+    assert metrics1["misses"] > 0
+
+    # Second search should hit cache
+    result2 = path_finding.bidirectional_search(cyclic_graph, "A", "E")
+    metrics2 = PathFinding.get_cache_metrics()
+    assert metrics2["hits"] == 1
+
+    # Results should be identical
+    assert result1.nodes == result2.nodes
+    assert result1.total_weight == result2.total_weight
+
+
+def test_cache_expiration(path_finding, cyclic_graph):
+    """Test that cached results expire correctly."""
+    # Configure cache with short TTL for testing
+    original_cache = PathCache.cache
+    try:
+        # Use reconfigure method instead of direct constructor
+        PathCache.reconfigure(max_size=1000, ttl=1)  # 1 second TTL
+
+        # First search
+        path_finding.bidirectional_search(cyclic_graph, "A", "E")
+
+        # Wait for cache to expire
+        sleep(1.1)
+
+        # Search again - should miss cache
+        path_finding.bidirectional_search(cyclic_graph, "A", "E")
+        metrics = PathFinding.get_cache_metrics()
+        assert metrics["misses"] >= 2
+    finally:
+        # Restore original cache
+        PathCache.cache = original_cache
+
+
+def test_cache_metrics(path_finding, cyclic_graph):
+    """Test cache metrics collection."""
+    # Clear cache and metrics
+    PathCache.clear()
+
+    # Perform multiple searches
+    for _ in range(3):
+        path_finding.bidirectional_search(cyclic_graph, "A", "E")
+
+    metrics = PathFinding.get_cache_metrics()
+    assert isinstance(metrics, dict)
+    assert "size" in metrics
+    assert "hits" in metrics
+    assert "misses" in metrics
+    assert "hit_rate" in metrics
+    assert isinstance(metrics["avg_access_time_ms"], float)
+
+    # Verify hit rate calculation
+    assert 0 <= metrics["hit_rate"] <= 1.0
+    assert metrics["hits"] + metrics["misses"] > 0

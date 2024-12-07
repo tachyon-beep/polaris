@@ -23,6 +23,7 @@
   - [Infrastructure Layer](#infrastructure-layer)
   - [Repository Layer](#repository-layer)
   - [Search Module](#search-module)
+- [Advanced Graph Algorithms](#advanced-graph-algorithms)
 - [Contributing](#contributing)
 - [License](#license)
 - [Contact](#contact)
@@ -37,6 +38,7 @@
 - **Data Integrity**: Comprehensive validation and integrity checking
 - **Caching**: Efficient LRU caching with time-based expiration
 - **Event Processing**: Robust event handling system with persistence
+- **Advanced Graph Algorithms**: High-performance path finding with preprocessing techniques
 
 ## Architecture
 
@@ -58,6 +60,9 @@ The system is organized into four main components:
   - `mcp.client` for MCP integration
   - `jsonschema` for validation
   - `aiofiles` for async I/O
+  - `psutil` for memory monitoring
+  - `heapdict` for efficient priority queues
+  - `sortedcontainers` for sorted data structures
 
 Install dependencies:
 
@@ -97,6 +102,40 @@ async with mcp.client.stdio.stdio_client() as (read_stream, write_stream):
     client = Client()
     await client.connect(read_stream, write_stream)
     kg_client = Polaris(client)
+```
+
+### Path Finding Operations
+
+```python
+from polaris.core.graph_paths.algorithms.advanced import (
+    ContractionHierarchies,
+    HubLabels,
+    TransitNodeRouting,
+    ALTPathFinder
+)
+
+# Initialize graph
+graph = Graph()
+
+# Contraction Hierarchies for static graphs
+ch = ContractionHierarchies(graph)
+ch.preprocess()  # Build shortcuts
+path = ch.find_path("A", "B")
+
+# Hub Labeling for fast queries
+hl = HubLabels(graph)
+hl.preprocess()  # Compute labels
+path = hl.find_path("A", "B")
+
+# Transit Node Routing for road networks
+tnr = TransitNodeRouting(graph)
+tnr.preprocess()  # Select transit nodes
+path = tnr.find_path("A", "B")
+
+# A* with Landmarks for dynamic graphs
+alt = ALTPathFinder(graph)
+alt.preprocess()  # Select landmarks
+path = alt.find_path("A", "B")
 ```
 
 ### Entity Operations
@@ -150,7 +189,7 @@ The core package provides fundamental functionality for working with knowledge g
   - Efficient adjacency list representation
   - Fast neighbor lookups
   - Comprehensive traversal algorithms
-  - Path finding and analysis
+  - Advanced path finding algorithms
   - Component identification
   - Metric calculations
 
@@ -218,6 +257,41 @@ The search module provides comprehensive search capabilities:
   - Pagination
   - Result aggregation
 
+## Advanced Graph Algorithms
+
+The system includes several advanced path finding algorithms optimized for different use cases:
+
+### Contraction Hierarchies (CH)
+- Preprocessing-based speedup technique
+- Excellent for static graphs
+- Supports fast distance queries
+- Memory-efficient implementation
+
+### Hub Labeling (HL)
+- Fast distance queries
+- Good for dense graphs
+- High preprocessing cost but very fast queries
+- Space-efficient label storage
+
+### Transit Node Routing (TNR)
+- Excellent for road networks
+- Uses access nodes concept
+- Very fast for long-distance queries
+- Locality filter for short paths
+
+### A* with Landmarks (ALT)
+- Uses triangle inequality for better heuristics
+- Good for dynamic graphs
+- Better than basic A* for sparse graphs
+- Bidirectional search support
+
+All advanced algorithms include:
+- Memory monitoring and management
+- Progress tracking during preprocessing
+- Comprehensive path validation
+- Performance metrics collection
+- Detailed error handling
+
 ## Best Practices
 
 1. **Entity Management**
@@ -232,6 +306,7 @@ The search module provides comprehensive search capabilities:
    - Use batch operations when possible
    - Implement proper indexing
    - Monitor resource usage
+   - Choose appropriate path finding algorithm
 
 3. **Error Handling**
    - Implement comprehensive error catching

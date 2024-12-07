@@ -62,3 +62,6 @@ src/_version.py
 
 # Data directory
 data/
+
+# Linting
+.flake8
