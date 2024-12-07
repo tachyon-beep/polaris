@@ -209,6 +209,15 @@ class ContractionPreprocessor:
 
     def _contract_node(self, node: str) -> List[Tuple[str, str]]:
         """Contract node and create necessary shortcuts."""
+        # Validation: Check if node exists
+        if not self.graph.has_node(node):
+            raise ValueError(f"Node '{node}' not found")
+
+        # Validation: Check if node is already contracted
+        state = self.storage.get_state()
+        if node in state.node_level:
+            raise ValueError(f"Node '{node}' already contracted")
+
         shortcuts = []
         incoming = sorted(self.graph.get_neighbors(node, reverse=True))
         outgoing = sorted(self.graph.get_neighbors(node))
@@ -276,14 +285,16 @@ class ContractionPreprocessor:
                             path_weight = path1.metadata.weight + path2.metadata.weight
                             min_path_weight = min(min_path_weight, path_weight)
 
-                # Only create a shortcut if it provides a better path
-                if min_path_weight > shortcut_weight + EPSILON:
+                # Only create a shortcut if it provides a better or equal path
+                if min_path_weight >= shortcut_weight - EPSILON:
                     try:
                         shortcut = self._create_validated_shortcut(
                             u, v, node, lower_edge, upper_edge
                         )
                         # Use add_edge to ensure the parallel_edges index is updated
                         self.add_edge(u, v, shortcut.edge.metadata.weight)
+                        # Add the shortcut to storage
+                        self.storage.add_shortcut(shortcut)
                         shortcuts.append((u, v))
                     except GraphOperationError as e:
                         logger.error(
@@ -375,6 +386,9 @@ class ContractionPreprocessor:
         # Add the shortcut using the preprocessor's add_edge method
         self.add_edge(u, v, shortcut.edge.metadata.weight)
 
+        # Add the shortcut to storage
+        self.storage.add_shortcut(shortcut)
+
         return shortcut
 
     def _update_shortcuts_for_new_edge(self, from_node: str, to_node: str) -> None:
@@ -434,7 +448,7 @@ class ContractionPreprocessor:
             to_node: Target node of the edge.
         """
         affected_shortcuts = []
-        for (u, v), _ in list(self.storage.shortcuts.items()):
+        for u, v in list(self.storage.shortcuts.keys()):
             if from_node in [u, v] or to_node in [u, v]:
                 del self.storage.shortcuts[(u, v)]
                 affected_shortcuts.append((u, v))

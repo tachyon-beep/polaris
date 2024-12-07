@@ -38,7 +38,6 @@ class GraphStateListener(Protocol):
 
     def on_state_change(self, change_type: GraphEvent, details: dict) -> None:
         """Called when the graph state changes."""
-        ...
 
 
 @dataclass
@@ -333,7 +332,7 @@ class Graph:
     def get_edges(self) -> Iterator[Edge]:
         """Get all edges in the graph."""
         with self._state_lock:
-            for from_node, edges in self._state.adjacency.items():
+            for _, edges in self._state.adjacency.items():
                 yield from edges.values()
 
     def get_edge_count(self) -> int:
